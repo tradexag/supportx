@@ -42,7 +42,7 @@ describe("workspace Claude key", () => {
     assert.equal((settings.workspace as { has_ai_key: boolean }).has_ai_key, true);
     assert.equal((settings.workspace as { ai_key_hint: string }).ai_key_hint, "…wxyz");
     assert.doesNotMatch(JSON.stringify(settings), /sk-ant/);
-    const raw = await one<{ n: number }>(h.ctx.db, "SELECT count(*)::int AS n FROM secrets WHERE convert_from(ciphertext, 'LATIN1') LIKE '%sk-ant%'");
+    const raw = await one<{ n: number }>(h.ctx.db, "SELECT count(*)::int AS n FROM secrets WHERE position(convert_to('sk-ant', 'UTF8') in ciphertext) > 0");
     assert.equal(raw!.n, 0);
     assert.equal((await checkWorkspaceAiKey(h.ctx, s.owner)).ok, true);
 

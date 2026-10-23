@@ -9,6 +9,25 @@ import { startFakeWeclapp, type FakeWeclapp } from "../../packages/testing/fake-
 const scope = (value: string) => ({ field: "salesChannel" as const, value });
 const order = (value: string) => ({ value, kind: "order" as const });
 
+describe("weclapp adapter with filters the tenant rejects", () => {
+  it("skips a rejected filter instead of failing the lookup, and names it when nothing else is left", async () => {
+    const fake = await startFakeWeclapp(demoWeclappData(), { token: DEMO.weclappToken, rejectFilters: ["salesOrder.orderNumberAtCustomer-eq", "salesInvoice.salesOrderId-eq"] });
+    try {
+      const provider = new WeclappOrderProvider({ baseUrl: fake.baseUrl, apiToken: DEMO.weclappToken, searchFields: ["orderNumberAtCustomer", "orderNumber"], allowTestEndpoints: true });
+      const viaOrderNumber = await provider.findOrders([order("AU-10003")], { field: "none", value: "" });
+      assert.equal(viaOrderNumber.status, "unique", "orderNumber still works, invoices are just missing");
+      if (viaOrderNumber.status === "unique") assert.equal(viaOrderNumber.order.invoices.length, 0);
+
+      const only = new WeclappOrderProvider({ baseUrl: fake.baseUrl, apiToken: DEMO.weclappToken, searchFields: ["orderNumberAtCustomer"], allowTestEndpoints: true });
+      const none = await only.findOrders([order("302-1234567-7654321")], { field: "none", value: "" });
+      assert.equal(none.status, "error");
+      if (none.status === "error") assert.match(none.error, /orderNumberAtCustomer-eq/);
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
 describe("weclapp adapter (contract against test double)", () => {
   let fake: FakeWeclapp;
   let provider: WeclappOrderProvider;

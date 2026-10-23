@@ -36,7 +36,8 @@ async function storeLink(
       conv.workspace_id, conv.id, conv.merchant_account_id, status, JSON.stringify(refs),
       JSON.stringify(result?.status === "ambiguous" ? result.candidates : []),
       unique?.order.id ?? null, unique?.matchedBy ?? null, linkedBy, userId,
-      result?.status === "error" ? result.error : result?.status === "missing" && result.outOfScopeMatches ? `${result.outOfScopeMatches} Treffer gehören zu einem anderen Verkäuferkonto.` : null,
+      result?.status === "error" ? result.error : result?.status === "missing" && result.rejectedFilters?.length ? `weclapp kennt einen Suchfilter nicht (${result.rejectedFilters.join(", ")}), dort wurde nicht gesucht.`
+        : result?.status === "missing" && result.outOfScopeMatches ? `${result.outOfScopeMatches} Treffer gehören zu einem anderen Verkäuferkonto.` : null,
       unique ? JSON.stringify(unique.order) : null, unique ? unique.order.retrievedAt : null,
     ],
   );

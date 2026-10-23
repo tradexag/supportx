@@ -199,7 +199,7 @@ export type OrderLookupResult =
   | { status: "unique"; order: OrderRecord; matchedBy: string }
   | { status: "ambiguous"; candidates: ReadonlyArray<{ id: string; orderNumber?: string; matchedBy: string }> }
   /** outOfScopeMatches: records with this reference exist, but only for another merchant account. */
-  | { status: "missing"; triedReferences: ReadonlyArray<string>; outOfScopeMatches?: number }
+  | { status: "missing"; triedReferences: ReadonlyArray<string>; outOfScopeMatches?: number; rejectedFilters?: ReadonlyArray<string> }
   | { status: "error"; error: string; retryable: boolean };
 
 /** A number from the customer's message and where to look it up. */

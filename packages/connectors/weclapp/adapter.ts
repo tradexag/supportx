@@ -207,12 +207,31 @@ export class WeclappOrderProvider implements OrderProvider {
     return result as Json[];
   }
 
+  /**
+   * Like #get, but a filter the tenant rejects (HTTP 400, e.g. "unexpected filter
+   * property") yields no rows and is remembered in `rejected`, so one unknown
+   * field does not break the whole lookup.
+   */
+  async #tryGet(resource: string, params: Record<string, string>, rejected: string[]): Promise<Json[]> {
+    try {
+      return await this.#get(resource, params);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 400) {
+        rejected.push(`${resource}?${Object.keys(params).filter((k) => k !== "pageSize").join("&")}`);
+        return [];
+      }
+      throw error;
+    }
+  }
+
   async #enrich(order: Json): Promise<OrderRecord> {
     const id = String(order.id);
+    const rejected: string[] = [];
     const [shipments, invoices] = await Promise.all([
-      this.#get("shipment", { "mainSalesOrderId-eq": id, pageSize: "100" }),
-      this.#get("salesInvoice", { "salesOrderId-eq": id, pageSize: "100" }),
+      this.#tryGet("shipment", { "mainSalesOrderId-eq": id, pageSize: "100" }, rejected),
+      this.#tryGet("salesInvoice", { "salesOrderId-eq": id, pageSize: "100" }, rejected),
     ]);
+    if (rejected.length) console.warn(`[weclapp] Filter abgelehnt, Daten fehlen am Auftrag: ${rejected.join(", ")}`);
     return mapOrder(order, shipments.filter((s) => belongsToOrder(s, id)), invoices, new Date().toISOString());
   }
 
@@ -225,6 +244,8 @@ export class WeclappOrderProvider implements OrderProvider {
     if (references.length === 0) return { status: "missing", triedReferences: [] };
     try {
       const found = new Map<string, { order: Json; matchedBy: string }>();
+      const rejected: string[] = [];
+      let tried = 0;
       let outOfScope = 0;
       const consider = (row: Json, matchedBy: string) => {
         if (!scopeMatches(row, scope)) {
@@ -236,14 +257,15 @@ export class WeclappOrderProvider implements OrderProvider {
       };
       const viaOrderIds = async (orderIds: Iterable<string>, matchedBy: string) => {
         for (const orderId of new Set(orderIds)) {
-          const row = (await this.#get("salesOrder", { "id-eq": orderId, pageSize: "1" })).find((r) => String(r.id) === orderId);
+          const row = (await this.#tryGet("salesOrder", { "id-eq": orderId, pageSize: "1" }, rejected)).find((r) => String(r.id) === orderId);
           if (row) consider(row, matchedBy);
         }
       };
       for (const { value, kind } of references) {
         if (kind === "order") {
           for (const field of this.#config.searchFields) {
-            const rows = await this.#get("salesOrder", { [`${field}-eq`]: value, pageSize: "20" });
+            tried++;
+            const rows = await this.#tryGet("salesOrder", { [`${field}-eq`]: value, pageSize: "20" }, rejected);
             for (const row of rows) {
               // Exact comparison on the returned record; never trust a fuzzy server match.
               const actual = field === "ecommerceOrder.ecommerceId" ? str((row.ecommerceOrder as Json | undefined)?.ecommerceId) : str(row[field]);
@@ -251,15 +273,20 @@ export class WeclappOrderProvider implements OrderProvider {
             }
           }
         } else if (kind === "invoice") {
-          const invoices = (await this.#get("salesInvoice", { "invoiceNumber-eq": value, pageSize: "20" })).filter((inv) => str(inv.invoiceNumber) === value);
+          tried++;
+          const invoices = (await this.#tryGet("salesInvoice", { "invoiceNumber-eq": value, pageSize: "20" }, rejected)).filter((inv) => str(inv.invoiceNumber) === value);
           await viaOrderIds(invoices.flatMap(orderIdsOf), `Rechnungsnummer=${value}`);
         } else {
           const shipments = await this.#shipmentsByTracking(value);
           await viaOrderIds(shipments.flatMap(orderIdsOf), `Sendungsnummer=${value}`);
         }
       }
+      if (rejected.length) console.warn(`[weclapp] Filter abgelehnt: ${rejected.join(", ")}`);
+      if (found.size === 0 && tried > 0 && rejected.length >= tried) {
+        return { status: "error", error: `weclapp lehnt die Suchfilter ab (${rejected.join(", ")}). Bitte die Suchfelder unter Einstellungen → weclapp prüfen.`, retryable: false };
+      }
       if (found.size === 0) {
-        return { status: "missing", triedReferences: [...new Set(references.map((r) => r.value))], ...(outOfScope > 0 ? { outOfScopeMatches: outOfScope } : {}) };
+        return { status: "missing", triedReferences: [...new Set(references.map((r) => r.value))], ...(outOfScope > 0 ? { outOfScopeMatches: outOfScope } : {}), ...(rejected.length ? { rejectedFilters: rejected } : {}) };
       }
       if (found.size > 1) {
         return {

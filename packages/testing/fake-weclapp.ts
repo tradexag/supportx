@@ -29,7 +29,8 @@ function values(record: unknown, path: string[]): unknown[] {
   return values((record as Record<string, unknown>)[path[0]!], path.slice(1));
 }
 
-export async function startFakeWeclapp(data: FakeWeclappData, opts: { token: string; port?: number }): Promise<FakeWeclapp> {
+/** `rejectFilters` (e.g. "salesInvoice.salesOrderId-eq") answer HTTP 400 like a tenant that does not know the filter. */
+export async function startFakeWeclapp(data: FakeWeclappData, opts: { token: string; port?: number; rejectFilters?: ReadonlyArray<string> }): Promise<FakeWeclapp> {
   const requests: string[] = [];
   let failStatus: number | null = null;
   const server: Server = createServer((req, res) => {
@@ -48,6 +49,9 @@ export async function startFakeWeclapp(data: FakeWeclappData, opts: { token: str
     if (req.method !== "GET") return send(405, { error: "read-only fake" });
     const match = /^\/webapp\/api\/v2\/(salesOrder|shipment|salesInvoice)$/.exec(url.pathname);
     if (!match) return send(404, { error: "not found" });
+    for (const key of url.searchParams.keys()) {
+      if (opts.rejectFilters?.includes(`${match[1]}.${key}`)) return send(400, { error: "unexpected filter property" });
+    }
     let rows = data[match[1] as keyof FakeWeclappData];
     for (const [key, value] of url.searchParams) {
       if (!key.endsWith("-eq")) continue;
