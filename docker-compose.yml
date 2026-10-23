@@ -1,0 +1,40 @@
+# Local/self-hosted start: PostgreSQL + web/API + worker.
+# Requires a .env file next to this file (see .env.example). DATABASE_URL is set here.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: supportx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: supportx
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supportx"]
+      interval: 5s
+      retries: 10
+
+  server:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://supportx:${POSTGRES_PASSWORD}@db:5432/supportx
+      HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["node", "--import", "tsx", "apps/worker/main.ts"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://supportx:${POSTGRES_PASSWORD}@db:5432/supportx
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

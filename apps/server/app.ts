@@ -1,0 +1,378 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { timingSafeEqual } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import cookie from "@fastify/cookie";
+import fastifyStatic from "@fastify/static";
+import { z } from "zod";
+import { one } from "../../packages/storage/db.ts";
+import { DEFAULT_THEME, parseTheme, publicTheme, themeCss, type Theme } from "../../packages/core/theme.ts";
+import { actorFor, changePassword, login, logout, userForSession, workspacesFor } from "../../packages/services/auth.ts";
+import { addNote, assign, caseCounts, checkWorkspaceAiKey, deleteCategoryRule, getCase, getSettings, listCases, setCaseCategory, setStatus, setSetupConfirmation, setWorkspaceAiKey, updateWorkspaceSettings, type CaseFilter } from "../../packages/services/cases.ts";
+import {
+  addRoutingRule,
+  checkChannel,
+  checkErp,
+  completeEbayConsent,
+  createEbayConnection,
+  createGraphConnection,
+  createKauflandConnection,
+  createMerchantAccount,
+  createMiraklConnection,
+  deleteRoutingRule,
+  revokeReplyRoute,
+  setConnectionPaused, replaceConnectionSecret, deleteConnection,
+  setMiraklBackgroundSync,
+  setSendEnabled,
+  startEbayConsent,
+  upsertWeclappConnection,
+  verifyReplyRoute,
+  type GraphConnectionSettings,
+} from "../../packages/services/connections.ts";
+import { EBAY_DELETION_PATH, ebayChallengeResponse } from "../../packages/connectors/ebay/account-deletion.ts";
+import { handleEbayAccountDeletion } from "../../packages/services/ebay-account-deletion.ts";
+import { ServiceError, type Actor, type AppContext } from "../../packages/services/context.ts";
+import { enqueue } from "../../packages/services/jobs.ts";
+import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
+import { approveDraft, discardDraft, editDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
+
+const SESSION_COOKIE = "supportx_session";
+const webDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "web", "dist");
+
+declare module "fastify" {
+  interface FastifyRequest {
+    userId?: string;
+  }
+}
+
+function parse<T>(schema: z.ZodType<T>, value: unknown): T {
+  const result = schema.safeParse(value);
+  if (!result.success) throw new ServiceError(400, "INVALID", result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  return result.data;
+}
+
+export async function buildServer(ctx: AppContext, opts: { logger?: boolean; ebayFetch?: typeof fetch } = {}): Promise<FastifyInstance> {
+  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 1_000_000, trustProxy: true });
+  await app.register(cookie);
+
+  app.setErrorHandler((error, _req, reply) => {
+    if (error instanceof ServiceError) return reply.status(error.status).send({ error: error.code, message: error.message });
+    const status = (error as { statusCode?: number }).statusCode;
+    if (status && status < 500) return reply.status(status).send({ error: "BAD_REQUEST", message: (error as Error).message });
+    app.log.error(error);
+    return reply.status(500).send({ error: "INTERNAL", message: "Interner Fehler." });
+  });
+
+  // Session authentication plus a custom header on state-changing calls (CSRF):
+  // browsers cannot send it cross-site without a CORS preflight, which we never allow.
+  app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (!req.url.startsWith("/api/") || req.url.startsWith("/api/login") || req.url.startsWith("/api/health") || req.url === "/api/theme") return;
+    if (req.method !== "GET" && req.headers["x-supportx-request"] !== "1") {
+      return reply.status(403).send({ error: "CSRF", message: "Anfrage abgelehnt." });
+    }
+    const user = await userForSession(ctx.db, req.cookies[SESSION_COOKIE]);
+    if (!user) return reply.status(401).send({ error: "UNAUTHENTICATED", message: "Bitte anmelden." });
+    req.userId = user.id;
+  });
+
+  const actor = (req: FastifyRequest): Promise<Actor> => actorFor(ctx.db, req.userId!, (req.params as { ws: string }).ws);
+
+  // --- Look of this installation (public: the login page needs it too) --------
+  const theme = loadTheme(ctx.config.THEME_DIR, (line) => app.log.warn(line));
+  const css = themeCss(theme);
+  app.get("/theme.css", async (_req, reply) => reply.type("text/css; charset=utf-8").header("Cache-Control", "no-cache").send(css));
+  app.get("/api/theme", async () => publicTheme(theme));
+  if (ctx.config.THEME_DIR && existsSync(ctx.config.THEME_DIR)) {
+    await app.register(fastifyStatic, { root: path.resolve(ctx.config.THEME_DIR), prefix: "/theme/", decorateReply: false, index: false, allowedPath: (p) => /^\/[\w.-]+\.(svg|png|jpe?g|webp|woff2?|ttf|otf)$/i.test(p) });
+  }
+
+  app.get("/api/health", async () => {
+    await ctx.db.query("SELECT 1");
+    return { ok: true, sendMode: ctx.config.SEND_MODE, demoMode: ctx.config.DEMO_MODE };
+  });
+
+  app.post("/api/login", async (req, reply) => {
+    if (req.headers["x-supportx-request"] !== "1") return reply.status(403).send({ error: "CSRF", message: "Anfrage abgelehnt." });
+    const body = parse(z.object({ email: z.string().email(), password: z.string().min(1) }), req.body);
+    const session = await login(ctx.db, body.email, body.password);
+    reply.setCookie(SESSION_COOKIE, session.token, { httpOnly: true, sameSite: "strict", secure: ctx.config.SECURE_COOKIES, path: "/", maxAge: 7 * 86400 });
+    return { ok: true };
+  });
+
+  app.post("/api/logout", async (req, reply) => {
+    const token = req.cookies[SESSION_COOKIE];
+    if (token) await logout(ctx.db, token);
+    reply.clearCookie(SESSION_COOKIE, { path: "/" });
+    return { ok: true };
+  });
+
+  app.post("/api/password", async (req) => {
+    const body = parse(z.object({ oldPassword: z.string().min(1), newPassword: z.string().min(1).max(200) }), req.body);
+    await changePassword(ctx.db, req.userId!, req.cookies[SESSION_COOKIE] ?? "", body.oldPassword, body.newPassword);
+    return { ok: true };
+  });
+
+  app.get("/api/me", async (req) => {
+    const user = await one<{ id: string; email: string; display_name: string }>(ctx.db, "SELECT id, email, display_name FROM users WHERE id = $1", [req.userId]);
+    return { user, workspaces: await workspacesFor(ctx.db, req.userId!), demoMode: ctx.config.DEMO_MODE, sendMode: ctx.config.SEND_MODE };
+  });
+
+  // --- Cases -----------------------------------------------------------------
+  app.get("/api/w/:ws/cases", async (req) => {
+    const filter = parse(z.enum(["open", "needs_attention", "waiting", "closed", "info", "all"]).default("open"), (req.query as { filter?: string }).filter) as CaseFilter;
+    const a = await actor(req);
+    return { cases: await listCases(ctx, a, filter), counts: await caseCounts(ctx, a) };
+  });
+  app.post("/api/w/:ws/cases/:id/category", async (req) => {
+    const body = parse(z.object({ category: z.enum(["support", "info"]), remember: z.enum(["none", "address", "domain"]).optional() }), req.body);
+    await setCaseCategory(ctx, await actor(req), (req.params as { id: string }).id, body);
+    return { ok: true };
+  });
+  app.delete("/api/w/:ws/category-rules/:id", async (req) => {
+    await deleteCategoryRule(ctx, await actor(req), (req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.get("/api/w/:ws/cases/:id", async (req) => getCase(ctx, await actor(req), (req.params as { id: string }).id));
+  app.post("/api/w/:ws/cases/:id/notes", async (req) => {
+    await addNote(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ body: z.string() }), req.body).body);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/cases/:id/status", async (req) => {
+    await setStatus(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ status: z.string() }), req.body).status);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/cases/:id/assign", async (req) => {
+    await assign(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ userId: z.string().uuid().nullable() }), req.body).userId);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/cases/:id/merchant-account", async (req) => {
+    await setConversationAccount(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ merchantAccountId: z.string().uuid() }), req.body).merchantAccountId);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/cases/:id/order-link", async (req) => {
+    const body = parse(z.object({ reference: z.string().max(60).optional(), candidateId: z.string().max(60).optional() }), req.body);
+    return { status: await linkOrderManually(ctx, await actor(req), (req.params as { id: string }).id, body) };
+  });
+  app.post("/api/w/:ws/cases/:id/redraft", async (req) => {
+    await requestRedraft(ctx, await actor(req), (req.params as { id: string }).id);
+    return { ok: true };
+  });
+
+  // --- Drafts, approvals, outbox -------------------------------------------------
+  app.put("/api/w/:ws/drafts/:id", async (req) => {
+    const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
+    return editDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  app.post("/api/w/:ws/drafts/:id/discard", async (req) => {
+    await discardDraft(ctx, await actor(req), (req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/drafts/:id/approve", async (req) => {
+    const body = parse(z.object({ expectedVersion: z.number().int().positive(), acknowledgeWarnings: z.boolean().default(false) }), req.body);
+    return { approvalId: await approveDraft(ctx, await actor(req), (req.params as { id: string }).id, body) };
+  });
+  app.post("/api/w/:ws/approvals/:id/send", async (req) => ({ outboxId: await queueReply(ctx, await actor(req), (req.params as { id: string }).id) }));
+  app.post("/api/w/:ws/outbox/:id/resolve", async (req) => {
+    const body = parse(z.object({ resolution: z.enum(["was_sent", "was_not_sent"]) }), req.body);
+    await resolveUncertainSend(ctx, await actor(req), (req.params as { id: string }).id, body.resolution);
+    return { ok: true };
+  });
+
+  // --- Settings (owner) -------------------------------------------------------
+  app.get("/api/w/:ws/settings", async (req) => getSettings(ctx, await actor(req)));
+  app.put("/api/w/:ws/settings", async (req) => {
+    const body = parse(z.object({ replySignature: z.string().max(1000).optional(), replyTone: z.string().max(200).optional(), allowedLinkPrefixes: z.array(z.string().max(300)).max(20).optional(), aiEnabled: z.boolean().optional() }), req.body);
+    await updateWorkspaceSettings(ctx, await actor(req), body);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/setup-confirmations", async (req) => {
+    const body = parse(z.object({ platform: z.string().max(40), done: z.boolean() }), req.body);
+    await setSetupConfirmation(ctx, await actor(req), body);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/ai-key", async (req) => {
+    const body = parse(z.object({ apiKey: z.string().max(400).nullable() }), req.body);
+    return { check: await setWorkspaceAiKey(ctx, await actor(req), body.apiKey) };
+  });
+  app.post("/api/w/:ws/ai-key/check", async (req) => checkWorkspaceAiKey(ctx, await actor(req)));
+  app.post("/api/w/:ws/merchant-accounts", async (req) => {
+    const body = parse(z.object({ name: z.string().max(120), platform: z.string(), orderScopeField: z.string(), orderScopeValue: z.string().max(200).default("") }), req.body);
+    return { id: await createMerchantAccount(ctx, await actor(req), body) };
+  });
+  app.put("/api/w/:ws/erp", async (req) => {
+    const body = parse(z.object({ baseUrl: z.string().max(300), apiToken: z.string().max(500).optional(), searchFields: z.array(z.string()).max(5).optional() }), req.body);
+    return { id: await upsertWeclappConnection(ctx, await actor(req), body) };
+  });
+  app.post("/api/w/:ws/erp/check", async (req) => checkErp(ctx, await actor(req)));
+  app.post("/api/w/:ws/connections", async (req) => {
+    const body = parse(
+      z.object({
+        displayName: z.string().max(120), tenantId: z.string().max(100), clientId: z.string().max(100), clientSecret: z.string().max(500), mailbox: z.string().max(200),
+        ownAddresses: z.array(z.string().max(200)).max(20).optional(), defaultMerchantAccountId: z.string().uuid().nullable().optional(),
+        defaultSourcePlatform: z.string().optional(), initialSyncDays: z.number().int().min(1).max(90).optional(), pushNotifications: z.boolean().optional(),
+        graphBaseUrl: z.string().optional(), authorityHost: z.string().optional(),
+      }),
+      req.body,
+    );
+    return { id: await createGraphConnection(ctx, await actor(req), body) };
+  });
+  const accountField = z.string().uuid().nullable().optional();
+  app.post("/api/w/:ws/connections/kaufland", async (req) => {
+    const body = parse(
+      z.object({ displayName: z.string().max(120).default("Kaufland"), clientKey: z.string().max(200), secretKey: z.string().max(200), storefronts: z.array(z.string().max(10)).max(20).optional(), defaultMerchantAccountId: accountField, initialSyncDays: z.number().int().min(1).max(90).optional(), baseUrl: z.string().max(300).optional() }),
+      req.body,
+    );
+    return { id: await createKauflandConnection(ctx, await actor(req), body) };
+  });
+  app.post("/api/w/:ws/connections/mirakl", async (req) => {
+    const body = parse(
+      z.object({ displayName: z.string().max(120).default("Shop Apotheke"), baseUrl: z.string().max(300), apiKey: z.string().max(500), shopId: z.string().max(20).optional(), defaultMerchantAccountId: accountField, initialSyncDays: z.number().int().min(1).max(90).optional() }),
+      req.body,
+    );
+    return { id: await createMiraklConnection(ctx, await actor(req), body) };
+  });
+  app.post("/api/w/:ws/connections/:id/mirakl-background-sync", async (req) => {
+    await setMiraklBackgroundSync(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ allowed: z.boolean(), evidenceNote: z.string().max(2000).optional() }), req.body));
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/ebay", async (req) => {
+    const body = parse(
+      z.object({
+        displayName: z.string().max(120).default("eBay"), clientId: z.string().max(200), clientSecret: z.string().max(500), ruName: z.string().max(200), sandbox: z.boolean().optional(),
+        defaultMerchantAccountId: accountField, initialSyncDays: z.number().int().min(1).max(90).optional(),
+        authBaseUrl: z.string().optional(), apiBaseUrl: z.string().optional(), identityBaseUrl: z.string().optional(),
+      }),
+      req.body,
+    );
+    return { id: await createEbayConnection(ctx, await actor(req), body) };
+  });
+  app.post("/api/w/:ws/connections/:id/ebay/authorize", async (req) => ({ url: await startEbayConsent(ctx, await actor(req), (req.params as { id: string }).id) }));
+  // eBay redirects the browser here (RuName "auth accepted URL"). The session cookie is
+  // SameSite=strict and therefore absent on this cross-site navigation, so the page
+  // hands code and state to the web app, which completes the consent with a normal API call.
+  app.get("/oauth/ebay/callback", async (req, reply) => {
+    const q = req.query as { code?: string; state?: string; error?: string };
+    const params = new URLSearchParams();
+    if (q.code && q.state) {
+      params.set("ebay_code", q.code.slice(0, 2000));
+      params.set("ebay_state", q.state.slice(0, 200));
+    } else params.set("ebay_error", (q.error ?? "abgebrochen").slice(0, 100));
+    return reply.redirect(`/?${params.toString()}`);
+  });
+  // eBay Marketplace Account Deletion (required for every production keyset). Public, signed by eBay.
+  app.register(async (hook) => {
+    hook.addContentTypeParser("application/json", { parseAs: "string", bodyLimit: 64_000 }, (_req, body, done) => done(null, body));
+    hook.get(EBAY_DELETION_PATH, async (req, reply) => {
+      const token = ctx.config.EBAY_DELETION_VERIFICATION_TOKEN;
+      const code = (req.query as { challenge_code?: string }).challenge_code;
+      if (!token || !code || code.length > 500) return reply.code(404).send();
+      const endpoint = `${ctx.config.PUBLIC_BASE_URL.replace(/\/+$/, "")}${EBAY_DELETION_PATH}`;
+      return reply.code(200).header("content-type", "application/json").send(JSON.stringify({ challengeResponse: ebayChallengeResponse(code, token, endpoint) }));
+    });
+    hook.post(EBAY_DELETION_PATH, async (req, reply) => {
+      if (!ctx.config.EBAY_DELETION_VERIFICATION_TOKEN) return reply.code(404).send();
+      const raw = typeof req.body === "string" ? req.body : "";
+      const header = req.headers["x-ebay-signature"];
+      const result = await handleEbayAccountDeletion(ctx, raw, Array.isArray(header) ? header[0] : header, opts.ebayFetch);
+      if (result.status !== 204) req.log.warn({ reason: result.reason }, "eBay-Kontolöschung nicht angenommen");
+      return reply.code(result.status).send();
+    });
+  });
+  app.post("/api/oauth/ebay/complete", async (req) => {
+    const body = parse(z.object({ code: z.string().min(1).max(2000), state: z.string().min(1).max(200) }), req.body);
+    return completeEbayConsent(ctx, req.userId!, body);
+  });
+  app.post("/api/w/:ws/connections/:id/check", async (req) => checkChannel(ctx, await actor(req), (req.params as { id: string }).id));
+  app.post("/api/w/:ws/connections/:id/sync", async (req) => {
+    const a = await actor(req);
+    const id = (req.params as { id: string }).id;
+    const row = await one(ctx.db, "SELECT 1 FROM channel_connections WHERE workspace_id = $1 AND id = $2", [a.workspaceId, id]);
+    if (!row) throw new ServiceError(404, "NOT_FOUND", "Verbindung nicht gefunden.");
+    await enqueue(ctx.db, { workspaceId: a.workspaceId, type: "mail.sync", payload: { connectionId: id }, dedupeKey: `mail.sync:${id}`, maxAttempts: 3 });
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/:id/send-enabled", async (req) => {
+    await setSendEnabled(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ enabled: z.boolean() }), req.body).enabled);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/:id/secret", async (req) => {
+    await replaceConnectionSecret(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ clientSecret: z.string().max(500) }), req.body).clientSecret);
+    return { ok: true };
+  });
+  app.delete("/api/w/:ws/connections/:id", async (req) => {
+    return await deleteConnection(ctx, await actor(req), (req.params as { id: string }).id);
+  });
+  app.post("/api/w/:ws/connections/:id/paused", async (req) => {
+    await setConnectionPaused(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ paused: z.boolean() }), req.body).paused);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/:id/rules", async (req) => {
+    const body = parse(z.object({ matchType: z.string(), pattern: z.string().max(200), sourcePlatform: z.string(), merchantAccountId: z.string().uuid().nullable().optional(), priority: z.number().int().optional() }), req.body);
+    return { id: await addRoutingRule(ctx, await actor(req), (req.params as { id: string }).id, body) };
+  });
+  app.delete("/api/w/:ws/rules/:id", async (req) => {
+    await deleteRoutingRule(ctx, await actor(req), (req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/:id/routes", async (req) => {
+    await verifyReplyRoute(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ sourcePlatform: z.string(), evidenceNote: z.string().max(2000) }), req.body));
+    return { ok: true };
+  });
+  app.delete("/api/w/:ws/connections/:id/routes/:platform", async (req) => {
+    const params = req.params as { id: string; platform: string };
+    await revokeReplyRoute(ctx, await actor(req), params.id, params.platform);
+    return { ok: true };
+  });
+
+  // --- Microsoft Graph change notifications (optional push trigger) -------------
+  app.post("/webhooks/microsoft/:connectionId", async (req, reply) => {
+    const query = req.query as { validationToken?: string };
+    if (query.validationToken) return reply.type("text/plain").send(query.validationToken);
+    const connectionId = (req.params as { connectionId: string }).connectionId;
+    if (!/^[0-9a-f-]{36}$/i.test(connectionId)) return reply.status(202).send();
+    const row = await one<{ workspace_id: string; config: GraphConnectionSettings }>(ctx.db, "SELECT workspace_id, config FROM channel_connections WHERE id = $1", [connectionId]);
+    const items = ((req.body as { value?: Array<{ clientState?: string }> } | null)?.value ?? []);
+    const expected = Buffer.from(row?.config.clientState ?? "");
+    const valid = row && expected.length > 0 && items.some((i) => {
+      const got = Buffer.from(i.clientState ?? "");
+      return got.length === expected.length && timingSafeEqual(got, expected);
+    });
+    // A notification is only a trigger: the delta sync decides what is new.
+    if (valid) await enqueue(ctx.db, { workspaceId: row.workspace_id, type: "mail.sync", payload: { connectionId }, dedupeKey: `mail.sync:${connectionId}`, maxAttempts: 3 });
+    return reply.status(202).send();
+  });
+
+  if (existsSync(webDist)) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith("/api/") || req.url.startsWith("/webhooks/")) return reply.status(404).send({ error: "NOT_FOUND", message: "Nicht gefunden." });
+      return reply.sendFile("index.html");
+    });
+  }
+
+  app.addHook("onSend", async (_req, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
+    return payload;
+  });
+  return app;
+}
+
+/** Reads THEME_DIR/theme.json. A broken file falls back to the default look and says why in the log. */
+export function loadTheme(dir: string | undefined, warn: (line: string) => void): Theme {
+  if (!dir) return DEFAULT_THEME;
+  const file = path.join(dir, "theme.json");
+  if (!existsSync(file)) {
+    warn(`THEME_DIR gesetzt, aber ${file} fehlt. Standard-Design wird verwendet.`);
+    return DEFAULT_THEME;
+  }
+  try {
+    return parseTheme(JSON.parse(readFileSync(file, "utf8")));
+  } catch (error) {
+    warn(`${file} ist ungültig, Standard-Design wird verwendet: ${(error as Error).message}`);
+    return DEFAULT_THEME;
+  }
+}

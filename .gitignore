@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.next/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.log
+.DS_Store
+data/
+uploads/
+backups/
+private-fixtures/
+*.zip

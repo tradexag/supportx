@@ -1,0 +1,448 @@
+import { createHash } from "node:crypto";
+import type { AllowedFact, CaseRisk, OrderRecord, Proposal, ProposalInput, SourcePlatform } from "../core/contracts.ts";
+import { detectRisks, newestEmailText } from "../core/classify.ts";
+import { checkDraft, hasBlockingIssue, type DraftIssue } from "../core/draft-check.ts";
+import { buildOrderFacts } from "../core/facts.ts";
+import { AiProviderError } from "../ai/index.ts";
+import { RulesProvider } from "../ai/rules.ts";
+import { many, one, withTx, type Queryable, type Tx } from "../storage/db.ts";
+import { audit } from "./audit.ts";
+import { channelFor, loadChannelConnection } from "./connections.ts";
+import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
+import { enqueue } from "./jobs.ts";
+
+interface ConversationRow {
+  id: string;
+  workspace_id: string;
+  connection_id: string;
+  merchant_account_id: string | null;
+  source_platform: SourcePlatform;
+  version: number;
+  latest_inbound_message_id: string | null;
+  order_match_status: string;
+  external_thread_key: string;
+  customer_address: string | null;
+}
+
+interface DraftRow {
+  id: string;
+  conversation_id: string;
+  version: number;
+  based_on_conversation_version: number;
+  inbound_message_id: string;
+  body: string;
+  status: string;
+  facts: AllowedFact[];
+  cited_fact_ids: string[];
+  issues: DraftIssue[];
+}
+
+interface WorkspaceRow {
+  reply_signature: string;
+  reply_tone: string;
+  default_language: string;
+  allowed_link_prefixes: string[];
+  ai_enabled: boolean;
+  ai_secret_id: string | null;
+}
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+async function loadConversation(q: Queryable, workspaceId: string, conversationId: string, lock = false): Promise<ConversationRow> {
+  const row = await one<ConversationRow>(q, `SELECT * FROM conversations WHERE workspace_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`, [workspaceId, conversationId]);
+  if (!row) throw new ServiceError(404, "NOT_FOUND", "Fall nicht gefunden.");
+  return row;
+}
+
+async function currentOrder(q: Queryable, workspaceId: string, conversationId: string): Promise<{ linkId: string | null; order: OrderRecord | null }> {
+  const link = await one<{ id: string; status: string; snapshot: OrderRecord | null }>(q, "SELECT id, status, snapshot FROM order_links WHERE workspace_id = $1 AND conversation_id = $2 AND is_current", [workspaceId, conversationId]);
+  return { linkId: link?.id ?? null, order: link?.status === "unique" ? link.snapshot : null };
+}
+
+function orderStatusForAi(status: string): ProposalInput["orderStatus"] {
+  if (status === "unique" || status === "ambiguous" || status === "error") return status;
+  if (status === "pending") return "not_checked";
+  return "missing";
+}
+
+/**
+ * Create a reply proposal for the latest inbound message. The AI provider sees
+ * the conversation (no internal notes) and the closed list of ERP facts; its
+ * output is schema-validated and claim-checked on the server.
+ */
+export async function generateDraft(ctx: AppContext, workspaceId: string, conversationId: string): Promise<string | null> {
+  const conv = await loadConversation(ctx.db, workspaceId, conversationId);
+  if (!conv.latest_inbound_message_id) return null;
+  const ws = (await one<WorkspaceRow>(ctx.db, "SELECT reply_signature, reply_tone, default_language, allowed_link_prefixes, ai_enabled, ai_secret_id FROM workspaces WHERE id = $1", [workspaceId]))!;
+  const { linkId, order } = await currentOrder(ctx.db, workspaceId, conversationId);
+  const facts = order ? buildOrderFacts(order) : [];
+  const history = await many<{ direction: "inbound" | "outbound"; body_text: string; received_at: Date; kind: string }>(
+    ctx.db,
+    "SELECT direction, body_text, received_at, kind FROM messages WHERE workspace_id = $1 AND conversation_id = $2 AND kind IN ('customer','echo','manual_external') ORDER BY received_at DESC LIMIT 8",
+    [workspaceId, conversationId],
+  );
+  const messages = history.reverse().map((m) => ({ direction: m.direction, text: m.direction === "inbound" ? newestEmailText(m.body_text) : m.body_text.slice(0, 3000), at: m.received_at.toISOString() }));
+  const input: ProposalInput = {
+    messages,
+    facts,
+    orderStatus: orderStatusForAi(conv.order_match_status),
+    sourcePlatform: conv.source_platform,
+    language: ws.default_language,
+    tone: ws.reply_tone,
+    signature: ws.reply_signature,
+  };
+
+  // The workspace's own Claude key wins over the installation's provider.
+  const provider = !ws.ai_enabled ? new RulesProvider() : ws.ai_secret_id ? ctx.aiWithKey(await ctx.secrets.read(ctx.db, workspaceId, ws.ai_secret_id)) : ctx.ai;
+  let proposal: Proposal;
+  let generatedBy = provider.id;
+  let model: string | null = provider.model;
+  let promptVersion = provider.promptVersion;
+  let providerNote: string | null = null;
+  try {
+    proposal = await provider.propose(input);
+  } catch (error) {
+    if (error instanceof AiProviderError && error.retryable) throw error;
+    // Non-retryable AI failure: fall back to the deterministic template and say so.
+    const fallback = new RulesProvider();
+    proposal = await fallback.propose(input);
+    generatedBy = fallback.id;
+    model = fallback.model;
+    promptVersion = fallback.promptVersion;
+    providerNote = `KI-Entwurf fehlgeschlagen: ${(error as Error).message}`;
+  }
+
+  const latestInbound = [...messages].reverse().find((m) => m.direction === "inbound")?.text ?? "";
+  const risks = [...new Set<CaseRisk>([...detectRisks(latestInbound), ...proposal.risks])];
+  const issues = checkDraft({
+    text: proposal.replyText,
+    citedFactIds: proposal.citedFactIds,
+    facts,
+    order,
+    orderStatus: orderStatusForAi(conv.order_match_status),
+    allowedLinkPrefixes: ws.allowed_link_prefixes,
+  });
+  if (risks.includes("health")) {
+    issues.push({ severity: "warn", code: "HEALTH_REVIEW", message: "Gesundheitsbezogene Anfrage: bitte durch fachlich qualifiziertes Personal prüfen lassen." });
+  }
+
+  return withTx(ctx.db, async (tx) => {
+    const locked = await loadConversation(tx, workspaceId, conversationId, true);
+    // A newer message arrived while the model was working: that message has its own job.
+    if (locked.version !== conv.version || locked.latest_inbound_message_id !== conv.latest_inbound_message_id) return null;
+    await tx.query("UPDATE drafts SET status = 'superseded', updated_at = now() WHERE workspace_id = $1 AND conversation_id = $2 AND status IN ('proposed','edited')", [workspaceId, conversationId]);
+    const draft = await one<{ id: string }>(
+      tx,
+      `INSERT INTO drafts (workspace_id, conversation_id, based_on_conversation_version, inbound_message_id, order_link_id, intent, summary, body,
+         cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+      [
+        workspaceId, conversationId, locked.version, locked.latest_inbound_message_id, linkId, proposal.intent,
+        [proposal.summary, providerNote].filter(Boolean).join(" "), proposal.replyText, [...proposal.citedFactIds],
+        JSON.stringify(facts), JSON.stringify(proposal.missingInformation), JSON.stringify(proposal.suggestedActions), risks,
+        JSON.stringify(issues), generatedBy, model, promptVersion,
+      ],
+    );
+    await tx.query("UPDATE conversations SET last_error = $3 WHERE workspace_id = $1 AND id = $2", [workspaceId, conversationId, providerNote]);
+    await audit(tx, { type: "system", workspaceId }, "draft.generated", "draft", draft!.id, { provider: generatedBy, model, intent: proposal.intent, blocking: hasBlockingIssue(issues) });
+    return draft!.id;
+  });
+}
+
+async function loadDraft(q: Queryable, workspaceId: string, draftId: string, lock = false): Promise<DraftRow> {
+  const row = await one<DraftRow>(q, `SELECT * FROM drafts WHERE workspace_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`, [workspaceId, draftId]);
+  if (!row) throw new ServiceError(404, "NOT_FOUND", "Entwurf nicht gefunden.");
+  return row;
+}
+
+/** Human edit. Optimistic locking on the draft version; every edit voids earlier approvals. */
+export async function editDraft(ctx: AppContext, actor: Actor, draftId: string, input: { body: string; expectedVersion: number }): Promise<{ version: number; issues: DraftIssue[] }> {
+  requireRole(actor, ["owner", "agent"]);
+  return withTx(ctx.db, async (tx) => {
+    const draft = await loadDraft(tx, actor.workspaceId, draftId, true);
+    if (!["proposed", "edited"].includes(draft.status)) throw new ServiceError(409, "DRAFT_CLOSED", "Dieser Entwurf ist nicht mehr aktuell.");
+    if (draft.version !== input.expectedVersion) throw new ServiceError(409, "VERSION_CONFLICT", "Der Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.");
+    const conv = await loadConversation(tx, actor.workspaceId, draft.conversation_id);
+    const { order } = await currentOrder(tx, actor.workspaceId, draft.conversation_id);
+    const ws = (await one<WorkspaceRow>(tx, "SELECT allowed_link_prefixes FROM workspaces WHERE id = $1", [actor.workspaceId]))!;
+    const issues = checkDraft({ text: input.body, citedFactIds: draft.cited_fact_ids, facts: draft.facts, order, orderStatus: orderStatusForAi(conv.order_match_status), allowedLinkPrefixes: ws.allowed_link_prefixes });
+    const updated = await one<{ version: number }>(
+      tx,
+      "UPDATE drafts SET body = $3, version = version + 1, status = 'edited', issues = $4, updated_by = $5, updated_at = now() WHERE workspace_id = $1 AND id = $2 RETURNING version",
+      [actor.workspaceId, draftId, input.body, JSON.stringify(issues), actorId(actor)],
+    );
+    await tx.query("UPDATE approvals SET invalidated_at = now(), invalidation_reason = 'Entwurf geändert' WHERE workspace_id = $1 AND draft_id = $2 AND invalidated_at IS NULL", [actor.workspaceId, draftId]);
+    await tx.query("UPDATE outbox SET state = 'suppressed', last_error = 'Entwurf geändert', updated_at = now() WHERE workspace_id = $1 AND draft_id = $2 AND state = 'planned'", [actor.workspaceId, draftId]);
+    await audit(tx, actor, "draft.edited", "draft", draftId, { version: updated!.version });
+    return { version: updated!.version, issues };
+  });
+}
+
+export async function discardDraft(ctx: AppContext, actor: Actor, draftId: string): Promise<void> {
+  requireRole(actor, ["owner", "agent"]);
+  await withTx(ctx.db, async (tx) => {
+    await loadDraft(tx, actor.workspaceId, draftId, true);
+    await tx.query("UPDATE drafts SET status = 'discarded', updated_at = now() WHERE workspace_id = $1 AND id = $2 AND status IN ('proposed','edited')", [actor.workspaceId, draftId]);
+    await tx.query("UPDATE approvals SET invalidated_at = now(), invalidation_reason = 'Entwurf verworfen' WHERE workspace_id = $1 AND draft_id = $2 AND invalidated_at IS NULL", [actor.workspaceId, draftId]);
+    await audit(tx, actor, "draft.discarded", "draft", draftId);
+  });
+}
+
+export async function requestRedraft(ctx: AppContext, actor: Actor, conversationId: string): Promise<void> {
+  requireRole(actor, ["owner", "agent"]);
+  await loadConversation(ctx.db, actor.workspaceId, conversationId);
+  await enqueue(ctx.db, { workspaceId: actor.workspaceId, type: "case.draft", payload: { conversationId }, dedupeKey: `case.draft:${conversationId}` });
+}
+
+/**
+ * Approve the exact current draft revision. The approval binds draft version,
+ * conversation version and a hash of the text, and expires.
+ */
+export async function approveDraft(ctx: AppContext, actor: Actor, draftId: string, input: { expectedVersion: number; acknowledgeWarnings: boolean }): Promise<string> {
+  requireRole(actor, ["owner", "agent"]);
+  if (actor.type !== "user") throw new ServiceError(403, "FORBIDDEN", "Freigaben erteilt nur ein Mensch.");
+  return withTx(ctx.db, async (tx) => {
+    const draft = await loadDraft(tx, actor.workspaceId, draftId, true);
+    const conv = await loadConversation(tx, actor.workspaceId, draft.conversation_id, true);
+    if (!["proposed", "edited"].includes(draft.status)) throw new ServiceError(409, "DRAFT_CLOSED", "Dieser Entwurf ist nicht mehr aktuell.");
+    if (draft.version !== input.expectedVersion) throw new ServiceError(409, "VERSION_CONFLICT", "Der Entwurf wurde zwischenzeitlich geändert.");
+    if (draft.inbound_message_id !== conv.latest_inbound_message_id) throw new ServiceError(409, "STALE_DRAFT", "Es ist eine neuere Kundennachricht eingegangen.");
+    if (hasBlockingIssue(draft.issues)) throw new ServiceError(422, "BLOCKING_ISSUES", "Der Entwurf enthält unbelegte Aussagen und kann so nicht freigegeben werden.");
+    if (draft.issues.length > 0 && !input.acknowledgeWarnings) throw new ServiceError(422, "WARNINGS_NOT_ACKNOWLEDGED", "Bitte die Hinweise zum Entwurf bestätigen.");
+    await tx.query("UPDATE approvals SET invalidated_at = now(), invalidation_reason = 'Durch neue Freigabe ersetzt' WHERE workspace_id = $1 AND draft_id = $2 AND invalidated_at IS NULL", [actor.workspaceId, draftId]);
+    const approval = await one<{ id: string }>(
+      tx,
+      `INSERT INTO approvals (workspace_id, conversation_id, draft_id, draft_version, conversation_version, body_sha256, approved_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now() + ($8::int * interval '1 minute')) RETURNING id`,
+      [actor.workspaceId, conv.id, draftId, draft.version, conv.version, sha256(draft.body), actor.userId, ctx.config.APPROVAL_TTL_MIN],
+    );
+    await audit(tx, actor, "draft.approved", "draft", draftId, { approvalId: approval!.id, draftVersion: draft.version, conversationVersion: conv.version });
+    return approval!.id;
+  });
+}
+
+export interface SendStatus {
+  allowed: boolean;
+  blockers: string[];
+}
+
+/** Why a reply can or cannot be sent right now. Shared by UI, worker and (later) MCP. */
+export async function sendBlockers(ctx: AppContext, q: Queryable, workspaceId: string, conversationId: string): Promise<SendStatus> {
+  const conv = await loadConversation(q, workspaceId, conversationId);
+  const connection = await loadChannelConnection(q, workspaceId, conv.connection_id);
+  const blockers: string[] = [];
+  if (ctx.config.SEND_MODE !== "enabled") blockers.push("Versand ist für diese Installation deaktiviert (SEND_MODE=drafts_only). Es werden nur Entwürfe erstellt.");
+  if (!connection.send_enabled) blockers.push(`Versand ist für die Verbindung „${connection.display_name}“ nicht aktiviert.`);
+  if (connection.paused) blockers.push("Die Verbindung ist pausiert.");
+  const route = await one(q, "SELECT 1 FROM reply_route_verifications WHERE workspace_id = $1 AND connection_id = $2 AND source_platform = $3 AND revoked_at IS NULL", [workspaceId, connection.id, conv.source_platform]);
+  if (!route) blockers.push(`Der Antwortweg für ${conv.source_platform} über diese Verbindung ist noch nicht mit einer kontrollierten Testantwort geprüft.`);
+  if (conv.merchant_account_id) {
+    const account = await one<{ paused: boolean }>(q, "SELECT paused FROM merchant_accounts WHERE workspace_id = $1 AND id = $2", [workspaceId, conv.merchant_account_id]);
+    if (account?.paused) blockers.push("Das Verkäuferkonto ist pausiert.");
+  }
+  if (conv.latest_inbound_message_id) {
+    const live = await one<{ state: string }>(
+      q,
+      "SELECT state FROM outbox WHERE workspace_id = $1 AND idempotency_key = $2 AND state NOT IN ('failed','suppressed')",
+      [workspaceId, idempotencyKey(conv.id, conv.latest_inbound_message_id)],
+    );
+    if (live) blockers.push(`Auf die letzte Kundennachricht gibt es bereits einen Versandauftrag (Status: ${live.state}).`);
+  }
+  return { allowed: blockers.length === 0, blockers };
+}
+
+function idempotencyKey(conversationId: string, inboundMessageId: string): string {
+  return `reply.v1:${conversationId}:${inboundMessageId}`;
+}
+
+interface ApprovalCheck {
+  ok: boolean;
+  reason?: string;
+}
+
+async function checkApproval(tx: Tx, workspaceId: string, approvalId: string): Promise<ApprovalCheck & { draft?: DraftRow; conv?: ConversationRow }> {
+  const approval = await one<{ draft_id: string; draft_version: number; conversation_version: number; body_sha256: string; expires_at: Date; invalidated_at: Date | null; invalidation_reason: string | null }>(
+    tx,
+    "SELECT * FROM approvals WHERE workspace_id = $1 AND id = $2",
+    [workspaceId, approvalId],
+  );
+  if (!approval) return { ok: false, reason: "Freigabe nicht gefunden." };
+  if (approval.invalidated_at) return { ok: false, reason: `Freigabe ungültig: ${approval.invalidation_reason ?? "zurückgezogen"}.` };
+  if (approval.expires_at.getTime() < Date.now()) return { ok: false, reason: "Freigabe abgelaufen." };
+  const draft = await loadDraft(tx, workspaceId, approval.draft_id);
+  const conv = await loadConversation(tx, workspaceId, draft.conversation_id, true);
+  if (draft.version !== approval.draft_version || sha256(draft.body) !== approval.body_sha256) return { ok: false, reason: "Entwurf wurde nach der Freigabe geändert." };
+  if (conv.version !== approval.conversation_version) return { ok: false, reason: "Der Fall hat sich nach der Freigabe geändert (neue Nachricht oder Zuordnung)." };
+  if (draft.inbound_message_id !== conv.latest_inbound_message_id) return { ok: false, reason: "Es ist eine neuere Kundennachricht eingegangen." };
+  return { ok: true, draft, conv };
+}
+
+/** Queue an approved reply. Fails closed on every stale or unverified precondition. */
+export async function queueReply(ctx: AppContext, actor: Actor, approvalId: string): Promise<string> {
+  requireRole(actor, ["owner", "agent"]);
+  return withTx(ctx.db, async (tx) => {
+    const check = await checkApproval(tx, actor.workspaceId, approvalId);
+    if (!check.ok || !check.draft || !check.conv) throw new ServiceError(409, "APPROVAL_INVALID", check.reason ?? "Freigabe ungültig.");
+    const status = await sendBlockers(ctx, tx, actor.workspaceId, check.conv.id);
+    if (!status.allowed) throw new ServiceError(409, "SEND_BLOCKED", status.blockers.join(" "));
+    const inbound = await one<{ reply_to: Array<{ address: string }>; from_address: string }>(tx, "SELECT reply_to, from_address FROM messages WHERE workspace_id = $1 AND id = $2", [actor.workspaceId, check.conv.latest_inbound_message_id]);
+    // Recipient is derived from the original message by the transport, never from draft text.
+    const expectedRecipient = inbound?.reply_to[0]?.address ?? inbound?.from_address ?? null;
+    let outboxId: string;
+    try {
+      const row = await one<{ id: string }>(
+        tx,
+        `INSERT INTO outbox (workspace_id, conversation_id, connection_id, draft_id, draft_version, approval_id, in_reply_to_message_id, idempotency_key, body, expected_recipient)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [actor.workspaceId, check.conv.id, check.conv.connection_id, check.draft.id, check.draft.version, approvalId, check.conv.latest_inbound_message_id, idempotencyKey(check.conv.id, check.conv.latest_inbound_message_id!), check.draft.body, expectedRecipient],
+      );
+      outboxId = row!.id;
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new ServiceError(409, "DUPLICATE_REPLY", "Auf diese Kundennachricht wurde bereits geantwortet oder ein Versand läuft.");
+      throw error;
+    }
+    await enqueue(tx, { workspaceId: actor.workspaceId, type: "outbox.dispatch", payload: { outboxId }, dedupeKey: `outbox.dispatch:${outboxId}`, maxAttempts: 3 });
+    await audit(tx, actor, "reply.queued", "outbox", outboxId, { approvalId, draftId: check.draft.id });
+    return outboxId;
+  });
+}
+
+interface OutboxRow {
+  id: string;
+  workspace_id: string;
+  conversation_id: string;
+  connection_id: string;
+  draft_id: string;
+  approval_id: string;
+  in_reply_to_message_id: string;
+  body: string;
+  state: string;
+  attempts: number;
+  dispatched_at: Date | null;
+}
+
+export class DispatchRetry extends Error {}
+
+/**
+ * Worker step. Reserve atomically, re-check everything, then call the channel
+ * once. A timeout or 5xx after the request left us is "delivery_uncertain" and
+ * is reconciled instead of retried.
+ */
+export async function dispatchOutbox(ctx: AppContext, workspaceId: string, outboxId: string): Promise<string> {
+  const reserved = await withTx(ctx.db, async (tx) => {
+    const row = await one<OutboxRow>(tx, "SELECT * FROM outbox WHERE workspace_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED", [workspaceId, outboxId]);
+    if (!row || row.state !== "planned") return null;
+    const check = await checkApproval(tx, workspaceId, row.approval_id);
+    const blockers = check.ok ? await sendBlockers(ctx, tx, workspaceId, row.conversation_id) : null;
+    // The pending entry itself is the only allowed live outbox row.
+    const otherBlockers = blockers?.blockers.filter((b) => !b.startsWith("Auf die letzte Kundennachricht gibt es bereits")) ?? [];
+    if (!check.ok || otherBlockers.length > 0) {
+      const reason = check.reason ?? otherBlockers.join(" ");
+      await tx.query("UPDATE outbox SET state = 'suppressed', last_error = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, outboxId, reason]);
+      await audit(tx, { type: "worker", workspaceId }, "reply.suppressed", "outbox", outboxId, { reason });
+      return null;
+    }
+    await tx.query("UPDATE outbox SET state = 'dispatching', attempts = attempts + 1, dispatched_at = now(), updated_at = now() WHERE id = $1", [outboxId]);
+    const inbound = await one<{ external_message_id: string; external_thread_key: string }>(
+      tx,
+      "SELECT m.external_message_id, c.external_thread_key FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.workspace_id = $1 AND m.id = $2",
+      [workspaceId, row.in_reply_to_message_id],
+    );
+    return { row, inboundExternalId: inbound!.external_message_id, threadKey: inbound!.external_thread_key };
+  });
+  if (!reserved) return "skipped";
+
+  const connection = await loadChannelConnection(ctx.db, workspaceId, reserved.row.connection_id);
+  let outcome;
+  try {
+    const channel = await channelFor(ctx, ctx.db, connection);
+    outcome = await channel.sendReply({ inReplyToExternalId: reserved.inboundExternalId, externalThreadKey: reserved.threadKey, bodyText: reserved.row.body, outboxMarker: outboxId });
+  } catch (error) {
+    outcome = { state: "uncertain" as const, error: (error as Error).message };
+  }
+
+  return withTx(ctx.db, async (tx) => {
+    const actor = { type: "worker" as const, workspaceId };
+    if (outcome.state === "provider_accepted") {
+      await tx.query("UPDATE outbox SET state = 'provider_accepted', external_message_id = $3, last_error = NULL, updated_at = now() WHERE workspace_id = $1 AND id = $2 AND state = 'dispatching'", [workspaceId, outboxId, outcome.externalMessageId ?? null]);
+      await tx.query("UPDATE drafts SET status = 'sent', updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, reserved.row.draft_id]);
+      await tx.query("UPDATE conversations SET status = 'waiting', updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, reserved.row.conversation_id]);
+      await enqueue(tx, { workspaceId, type: "outbox.reconcile", payload: { outboxId }, dedupeKey: `outbox.reconcile:${outboxId}`, delayMs: 60_000, maxAttempts: 3 });
+      await audit(tx, actor, "reply.provider_accepted", "outbox", outboxId);
+      return "provider_accepted";
+    }
+    if (outcome.state === "rejected" && outcome.retryable) {
+      // Definitely not executed (e.g. 429): safe to try again later.
+      await tx.query("UPDATE outbox SET state = 'planned', last_error = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, outboxId, outcome.error]);
+      throw new DispatchRetry(outcome.error);
+    }
+    if (outcome.state === "rejected") {
+      await tx.query("UPDATE outbox SET state = 'failed', last_error = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, outboxId, outcome.error]);
+      await audit(tx, actor, "reply.failed", "outbox", outboxId, { error: outcome.error });
+      return "failed";
+    }
+    await tx.query("UPDATE outbox SET state = 'delivery_uncertain', last_error = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, outboxId, outcome.error]);
+    await enqueue(tx, { workspaceId, type: "outbox.reconcile", payload: { outboxId }, dedupeKey: `outbox.reconcile:${outboxId}`, delayMs: 30_000, maxAttempts: 4 });
+    await audit(tx, actor, "reply.delivery_uncertain", "outbox", outboxId, { error: outcome.error });
+    return "delivery_uncertain";
+  });
+}
+
+/** Look for the sent copy. Never resends; an unresolved uncertainty waits for a person. */
+export async function reconcileOutbox(ctx: AppContext, workspaceId: string, outboxId: string): Promise<string> {
+  const row = await one<OutboxRow & { external_thread_key: string }>(
+    ctx.db,
+    "SELECT o.*, c.external_thread_key FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE o.workspace_id = $1 AND o.id = $2",
+    [workspaceId, outboxId],
+  );
+  if (!row || !["provider_accepted", "delivery_uncertain", "dispatching"].includes(row.state)) return "nothing_to_do";
+  const connection = await loadChannelConnection(ctx.db, workspaceId, row.connection_id);
+  const channel = await channelFor(ctx, ctx.db, connection);
+  const result = await channel.reconcileReply(outboxId, row.dispatched_at ?? new Date(Date.now() - 3_600_000), row.external_thread_key, row.body);
+  if (result.state === "found") {
+    await withTx(ctx.db, async (tx) => {
+      await tx.query("UPDATE outbox SET state = 'confirmed', external_message_id = $3, last_error = NULL, updated_at = now() WHERE workspace_id = $1 AND id = $2 AND state IN ('provider_accepted','delivery_uncertain','dispatching')", [workspaceId, outboxId, result.externalMessageId]);
+      await tx.query("UPDATE drafts SET status = 'sent', updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, row.draft_id]);
+      await audit(tx, { type: "worker", workspaceId }, "reply.reconciled_found", "outbox", outboxId);
+    });
+    return "confirmed";
+  }
+  const note = result.state === "unknown" ? `Abgleich nicht möglich: ${result.error}` : "Kein gesendetes Exemplar gefunden. Bitte im Postfach prüfen und manuell klären.";
+  if (row.state !== "provider_accepted") {
+    await ctx.db.query("UPDATE outbox SET state = 'delivery_uncertain', last_error = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, outboxId, note]);
+  }
+  return row.state === "provider_accepted" ? "accepted_unconfirmed" : "still_uncertain";
+}
+
+/**
+ * A person resolves an uncertain send after checking the mailbox: either it was
+ * sent (confirmed) or it was not (failed, which allows a new approved send).
+ */
+export async function resolveUncertainSend(ctx: AppContext, actor: Actor, outboxId: string, resolution: "was_sent" | "was_not_sent"): Promise<void> {
+  requireRole(actor, ["owner", "agent"]);
+  await withTx(ctx.db, async (tx) => {
+    const row = await one<OutboxRow>(tx, "SELECT * FROM outbox WHERE workspace_id = $1 AND id = $2 FOR UPDATE", [actor.workspaceId, outboxId]);
+    if (!row) throw new ServiceError(404, "NOT_FOUND", "Versandauftrag nicht gefunden.");
+    if (!["delivery_uncertain", "dispatching"].includes(row.state)) throw new ServiceError(409, "NOT_UNCERTAIN", "Dieser Versandauftrag ist nicht ungeklärt.");
+    if (resolution === "was_sent") {
+      await tx.query("UPDATE outbox SET state = 'confirmed', resolved_by = $3, last_error = 'Manuell als gesendet bestätigt', updated_at = now() WHERE id = $2 AND workspace_id = $1", [actor.workspaceId, outboxId, actorId(actor)]);
+      await tx.query("UPDATE drafts SET status = 'sent', updated_at = now() WHERE workspace_id = $1 AND id = $2", [actor.workspaceId, row.draft_id]);
+    } else {
+      await tx.query("UPDATE outbox SET state = 'failed', resolved_by = $3, last_error = 'Manuell als nicht gesendet geklärt', updated_at = now() WHERE id = $2 AND workspace_id = $1", [actor.workspaceId, outboxId, actorId(actor)]);
+      await tx.query("UPDATE approvals SET invalidated_at = now(), invalidation_reason = 'Versand nicht erfolgt; neue Freigabe nötig' WHERE workspace_id = $1 AND id = $2 AND invalidated_at IS NULL", [actor.workspaceId, row.approval_id]);
+    }
+    await audit(tx, actor, "reply.uncertain_resolved", "outbox", outboxId, { resolution });
+  });
+}
+
+/** Sweeper: a reservation without a recorded result (worker crash) becomes uncertain. */
+export async function sweepStaleDispatches(ctx: AppContext): Promise<number> {
+  const rows = await many<{ id: string; workspace_id: string }>(
+    ctx.db,
+    "UPDATE outbox SET state = 'delivery_uncertain', last_error = 'Versandergebnis nicht protokolliert (Prozessabbruch?)', updated_at = now() WHERE state = 'dispatching' AND updated_at < now() - interval '5 minutes' RETURNING id, workspace_id",
+  );
+  for (const row of rows) {
+    await enqueue(ctx.db, { workspaceId: row.workspace_id, type: "outbox.reconcile", payload: { outboxId: row.id }, dedupeKey: `outbox.reconcile:${row.id}`, maxAttempts: 4 });
+  }
+  return rows.length;
+}

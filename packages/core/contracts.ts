@@ -1,0 +1,271 @@
+/**
+ * Service-level extension contracts. Message transport, order context and AI
+ * proposals are deliberately independent: a channel never looks up orders, an
+ * order provider never sends messages, and an AI provider never gets routes,
+ * recipients, credentials or send rights.
+ */
+
+/** Every persisted or executable object belongs to exactly one workspace. */
+export interface WorkspaceScope {
+  workspaceId: string;
+}
+
+/**
+ * Three separate states, as required by the build plan: documented by the vendor,
+ * configured for this installation, and verified with this concrete account.
+ * Only `verified` may unlock unattended behaviour such as sending.
+ */
+export type CapabilityState = "not_implemented" | "documented" | "configured" | "verified";
+
+export interface ConnectorCapabilities {
+  receive: CapabilityState;
+  reply: CapabilityState;
+  attachments: CapabilityState;
+  pushNotifications: CapabilityState;
+  sendReconciliation: CapabilityState;
+}
+
+export type SourcePlatform =
+  | "email"
+  | "amazon"
+  | "ebay"
+  | "kaufland"
+  | "shop_apotheke"
+  | "docmorris"
+  | "shopify";
+
+export interface MessageAddress {
+  address: string;
+  name?: string;
+}
+
+/** A message as delivered by a channel adapter, before persistence. */
+export interface IngressMessage {
+  /** Stable provider id (Graph: immutable id). Unique per connection. */
+  externalMessageId: string;
+  /** RFC 5322 Message-ID when the transport has one. Used for duplicate detection. */
+  internetMessageId?: string;
+  /** Provider thread identity (Graph conversationId, eBay conversationId, Kaufland ticket id...). */
+  externalThreadKey: string;
+  /** Folder or resource the message was read from (e.g. inbox, sentitems). */
+  resource: string;
+  direction: "inbound" | "outbound";
+  from: MessageAddress;
+  to: ReadonlyArray<MessageAddress>;
+  replyTo: ReadonlyArray<MessageAddress>;
+  subject: string;
+  bodyText: string;
+  receivedAt: Date;
+  /** Selected transport headers kept for provenance (Message-ID, In-Reply-To, References, x-supportx-*). */
+  headers: Readonly<Record<string, string>>;
+  hasAttachments: boolean;
+  /**
+   * Keys that let a later native adapter recognise an email copy of the same
+   * platform message (e.g. "kaufland:ticket:123"). Only set when the connector
+   * can derive them from trustworthy data; never from free text similarity.
+   */
+  aliasKeys: ReadonlyArray<string>;
+}
+
+export interface SyncResult {
+  messages: ReadonlyArray<IngressMessage>;
+  /** Items removed remotely; kept locally for audit, only flagged. */
+  removedExternalIds: ReadonlyArray<string>;
+  /** Opaque, per-resource cursors to persist after the batch is stored. */
+  cursors: Readonly<Record<string, string>>;
+  /** True when a cursor was invalid and the adapter restarted a full sync. */
+  cursorReset: boolean;
+}
+
+export interface ReplyRequest {
+  /** External id of the inbound message being answered; the transport derives the recipient from it. */
+  inReplyToExternalId: string;
+  /** Thread of the inbound message (Graph conversationId, `ebay:conversation:<id>`, `kaufland:ticket:<id>`...). */
+  externalThreadKey: string;
+  bodyText: string;
+  /** Local outbox id, embedded so a later reconciliation can find the sent copy. */
+  outboxMarker: string;
+}
+
+export type ReplyOutcome =
+  | { state: "provider_accepted"; externalMessageId?: string }
+  /** The request may or may not have been executed (timeout, connection reset). */
+  | { state: "uncertain"; error: string }
+  /** The provider definitely rejected the request; nothing was sent. */
+  | { state: "rejected"; error: string; retryable: boolean };
+
+export type ReconcileOutcome =
+  | { state: "found"; externalMessageId: string; internetMessageId?: string }
+  | { state: "not_found" }
+  | { state: "unknown"; error: string };
+
+/**
+ * Message transport adapter. Implementations: Microsoft Graph mail, eBay Commerce
+ * Message API, Kaufland Seller API tickets and Mirakl inbox (Shop Apotheke).
+ * Amazon is handled as a relay route on top of the Microsoft adapter. See
+ * packages/connectors/catalog.ts for what is verified against a real account.
+ */
+export interface MessageChannel {
+  readonly kind: string;
+  readonly capabilities: ConnectorCapabilities;
+  /** Mailbox/account identity used to recognise our own outbound messages. */
+  readonly ownAddresses: ReadonlyArray<string>;
+  /** Read changes since the stored cursors. Must be safe to repeat. */
+  sync(cursors: Readonly<Record<string, string>>): Promise<SyncResult>;
+  /** Only the outbox worker may call this, after its atomic precondition check. */
+  sendReply(request: ReplyRequest): Promise<ReplyOutcome>;
+  /**
+   * Look for a sent copy after an uncertain send. Mail carries the outbox marker
+   * header; marketplace APIs have no custom headers, so their adapters match our
+   * own message in the thread by exact (normalised) text instead.
+   */
+  reconcileReply(marker: string, since: Date, threadKey: string, sentBody: string): Promise<ReconcileOutcome>;
+  /** Cheap connectivity/permission check for the setup screen. */
+  checkAccess(): Promise<{ ok: boolean; detail: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Order context
+
+export interface OrderScopeRule {
+  /**
+   * Which weclapp field identifies orders of a merchant account. Verified on the
+   * returned record, not only passed as a query filter.
+   */
+  field: "salesChannel" | "customerId" | "ecommerceConnectionId" | "tag" | "none";
+  value: string;
+}
+
+export interface OrderLineFact {
+  id: string;
+  position?: number;
+  title: string;
+  articleId?: string;
+  quantity: number;
+  shippedQuantity?: number;
+  returnedQuantity?: number;
+}
+
+export interface ParcelFact {
+  id?: string;
+  trackingId?: string;
+  trackingUrl?: string;
+  carrierId?: string;
+  reference?: string;
+  /** "parcels" (current) or "legacy_package_tracking" (deprecated single field). */
+  source: "parcels" | "legacy_package_tracking";
+}
+
+export interface ShipmentFact {
+  id: string;
+  shipmentNumber?: string;
+  /** Status as recorded in the ERP. Not a carrier scan unless the ERP says so. */
+  erpStatus?: string;
+  erpStatusAt?: string;
+  statusHistory: ReadonlyArray<{ status: string; at?: string }>;
+  shippingDate?: string;
+  deliveryDate?: string;
+  items: ReadonlyArray<{ orderLineId?: string; title?: string; quantity: number }>;
+  parcels: ReadonlyArray<ParcelFact>;
+}
+
+export interface InvoiceFact {
+  id: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  status?: string;
+  paymentStatus?: string;
+}
+
+export interface OrderRecord {
+  provider: "weclapp";
+  id: string;
+  orderNumber?: string;
+  orderNumberAtCustomer?: string;
+  orderDate?: string;
+  status?: string;
+  salesChannel?: string;
+  ecommerceConnectionId?: string;
+  customerId?: string;
+  tags: ReadonlyArray<string>;
+  lines: ReadonlyArray<OrderLineFact>;
+  shipments: ReadonlyArray<ShipmentFact>;
+  invoices: ReadonlyArray<InvoiceFact>;
+  /** When this application fetched the record. Event times are kept per fact. */
+  retrievedAt: string;
+}
+
+export type OrderLookupResult =
+  | { status: "unique"; order: OrderRecord; matchedBy: string }
+  | { status: "ambiguous"; candidates: ReadonlyArray<{ id: string; orderNumber?: string; matchedBy: string }> }
+  /** outOfScopeMatches: records with this reference exist, but only for another merchant account. */
+  | { status: "missing"; triedReferences: ReadonlyArray<string>; outOfScopeMatches?: number }
+  | { status: "error"; error: string; retryable: boolean };
+
+/** A number from the customer's message and where to look it up. */
+export interface ReferenceQuery {
+  value: string;
+  kind: "order" | "invoice" | "tracking";
+}
+
+/** Read-only order context. weclapp is the only implementation in v1. */
+export interface OrderProvider {
+  readonly kind: "weclapp";
+  findOrders(references: ReadonlyArray<ReferenceQuery>, scope: OrderScopeRule): Promise<OrderLookupResult>;
+  getOrder(orderId: string, scope: OrderScopeRule): Promise<OrderLookupResult>;
+  checkAccess(): Promise<{ ok: boolean; detail: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// AI proposals
+
+export type CaseIntent =
+  | "parcel_status"
+  | "wrong_item"
+  | "damaged_item"
+  | "return_request"
+  | "invoice"
+  | "product_question"
+  | "other";
+
+export type CaseRisk = "health" | "legal" | "refund" | "replacement" | "cancellation" | "delivery_disputed" | "identity_uncertain" | "abusive" | "other";
+
+export type SuggestedAction = "none" | "ask_customer" | "check_return_label" | "propose_replacement" | "propose_refund" | "escalate";
+
+/** A verified fact the model may use. Only facts in this list may be cited. */
+export interface AllowedFact {
+  id: string;
+  text: string;
+  source: string;
+  observedAt?: string;
+}
+
+export interface ProposalInput {
+  /** Conversation, oldest first. Internal notes are never included. */
+  messages: ReadonlyArray<{ direction: "inbound" | "outbound"; text: string; at: string }>;
+  facts: ReadonlyArray<AllowedFact>;
+  /** Order matching outcome, so the model knows whether data is missing. */
+  orderStatus: "unique" | "ambiguous" | "missing" | "error" | "not_checked";
+  sourcePlatform: SourcePlatform;
+  language: string;
+  tone: string;
+  signature: string;
+}
+
+export interface Proposal {
+  intent: CaseIntent;
+  language: string;
+  summary: string;
+  replyText: string;
+  citedFactIds: ReadonlyArray<string>;
+  missingInformation: ReadonlyArray<string>;
+  suggestedActions: ReadonlyArray<SuggestedAction>;
+  risks: ReadonlyArray<CaseRisk>;
+}
+
+export interface AiProvider {
+  readonly id: string;
+  readonly model: string;
+  readonly promptVersion: string;
+  propose(input: ProposalInput): Promise<Proposal>;
+}

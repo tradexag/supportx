@@ -1,0 +1,17 @@
+{
+  "productName": "SupportX",
+  "tagline": "Support-Posteingang für Marktplatz-Händler",
+  "colors": {
+    "background": "#f8f9fa",
+    "surface": "#ffffff",
+    "text": "#111111",
+    "textSecondary": "#303030",
+    "muted": "#6a6e73",
+    "soft": "#a4a8ad",
+    "line": "#e8e8e8",
+    "primary": "#111111",
+    "primaryText": "#ffffff",
+    "accent": "#d52b1e"
+  },
+  "radius": 2
+}

@@ -1,0 +1,79 @@
+# SupportX
+
+A self-hosted support inbox for marketplace sellers: Microsoft 365 mail in, order context from weclapp, AI-drafted replies, human review. MIT-licensed.
+
+**An open-source product of [ASEIO](https://aseio.app)**, owned by TradeX International AG.
+
+**Status: 0.3.0.** Native eBay, Kaufland and Shop Apotheke (Mirakl) message channels, Amazon, DocMorris and Shopify via the Microsoft mailbox. The Microsoft mailbox runs in production with a first merchant (drafts only). eBay, Kaufland, Mirakl and weclapp are tested against local test doubles and a real PostgreSQL only, **not yet against live accounts**. Sending is off by default, and this is not a production-ready helpdesk. See [Implementation status](docs/CONNECTORS.md#implementation-status-version-020-2026-10-22).
+
+## What works
+
+- **Ingestion:** Microsoft Graph delta sync of Inbox and Sent Items (shared mailboxes via application permissions), idempotent storage, expired-cursor recovery, optional change notifications. Own replies are recognised as echoes; replies sent manually in Outlook are recognised and withdraw open approvals.
+- **Routing:** per-connection rules on sender/recipient/subject decide platform (DocMorris, Amazon relay, Shopify mail, …) and seller account. Message text can never select an account.
+- **Matching:** order references (Amazon/eBay formats, labelled numbers) are looked up read-only in weclapp, first within the case's seller account (e.g. `salesChannel`), then in all of weclapp; a unique hit fills in the fitting seller account. Results are *eindeutig*, *unklar* (several candidates to pick from), *nicht gefunden*, *keine Bestellnummer* or *Fehler*, all visible for manual review. All shipments and parcels are kept.
+- **Drafts:** `AiProvider` with Claude (`claude-opus-5-5`, structured output) or deterministic German templates. Drafts may only use facts from weclapp; a server-side check blocks unknown facts, unapproved links, unsupported dispatch/delivery claims and “refund done”-style statements. Health questions are flagged for qualified review. Internal notes never reach the model.
+- **Review and sending:** editable drafts, versioned approvals that expire and are invalidated by a new customer message or an edit, an outbox with exactly one live reply per customer message, and explicit `delivery_uncertain` handling with reconciliation in Sent Items instead of retries. Sending needs `SEND_MODE=enabled`, a per-connection switch and a recorded reply-route verification per platform.
+- **Isolation:** workspaces and seller accounts on every row (composite foreign keys), encrypted connector secrets (AES-256-GCM), session cookies with CSRF header, roles owner/agent/viewer.
+- **Web UI** (German): case list with filters, case view with history, order/shipments/parcels/invoices, account and manual order assignment, notes, draft editor, approval/send, outbox status, audit log; settings for accounts, weclapp, Microsoft mailboxes, routing rules, verified reply routes and connector status.
+
+- **Marketplace channels:** eBay Commerce Message API (OAuth per seller account), Kaufland Seller API tickets (HMAC), Shop Apotheke via the Mirakl inbox (read on demand unless the operator allowed background reads). Same drafts, approvals and outbox as mail; not yet tested against live accounts.
+
+Not yet: attachments (only flagged), MCP server, refund/replacement/return workflows, automatic replies.
+
+## Quick start (demo, no credentials)
+
+Requires Node.js ≥ 22.12 and PostgreSQL 16 with a database `supportx` for user `supportx`/`supportx` (or set `DATABASE_URL`).
+
+```bash
+npm ci
+npm run demo
+```
+
+Open http://localhost:3000 and sign in as `service@demo-haendler.example.invalid` / `demo-passwort-nur-lokal` (owner: `inhaber@…`). The demo starts local stand-ins for weclapp and Graph with **synthetic** data; the real adapters talk to them over HTTP. The UI shows a DEMO banner.
+
+## Real setup
+
+German guide: [docs/SETUP.de.md](docs/SETUP.de.md) (environment, first admin, weclapp read-only user, Entra app + Exchange RBAC scoping, routing rules, Claude, enabling replies). Configuration template: [.env.example](.env.example). Docker: `docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build` (single-server production setup with Caddy, optional pull-based auto-updates, see the German guide).
+
+| Command | Purpose |
+| --- | --- |
+| `npm run db:migrate` | Apply SQL migrations |
+| `npm run admin:create -- --email … --workspace …` | First owner + workspace (`SUPPORTX_ADMIN_PASSWORD` env) |
+| `npm run start:server` / `npm run start:worker` | Web/API and background worker (separate processes) |
+| `npm run dev` | Server + worker with reload, Vite dev server on :5173 |
+| `npm run typecheck` | `tsc` for server and web |
+| `npm test` | Unit, adapter-contract, DB integration and API tests (needs `TEST_DATABASE_URL`, default `postgres://supportx:supportx@127.0.0.1:5432/supportx_test`) |
+
+## Layout
+
+```
+apps/server   Fastify HTTP API, serves the built UI
+apps/worker   job loop: mail sync, matching, drafts, outbox dispatch/reconcile
+apps/web      React UI (Vite)
+packages/core        contracts (MessageChannel, OrderProvider, AiProvider), references, routing, facts, draft checks
+packages/connectors  Microsoft Graph mail, weclapp v2 (read-only), connector catalog
+packages/ai          Claude provider, rules provider, prompt and proposal schema
+packages/services    application services shared by API, worker and a future MCP server
+packages/storage     config, PostgreSQL, migrations, secret encryption
+packages/testing     test doubles and synthetic demo data
+```
+
+## Documentation
+
+| File | Purpose |
+| --- | --- |
+| [Setup (German)](docs/SETUP.de.md) | Installation and account configuration |
+| [Build brief (German)](docs/BUILD_PLAN.de.md) | Product scope and decisions |
+| [Architecture](docs/ARCHITECTURE.md) | Identity, ingestion, evidence, policy, delivery, AI boundaries |
+| [Connectors](docs/CONNECTORS.md) | Implementation status, researched capabilities, account test gates |
+| [Sources](docs/SOURCES.md) | Official references |
+| [Roadmap](docs/ROADMAP.md) | Milestones |
+| [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) | |
+
+## Platform approach
+
+weclapp is the only order-data source; there are no order imports from Shopify, Amazon, eBay, Kaufland or DocMorris. DocMorris, Amazon (Buyer-Seller relay) and Shopify enquiries arrive as email through Microsoft. eBay (Commerce Message API), Kaufland (tickets) and Shop Apotheke (Mirakl) are planned as native channels behind the same `MessageChannel` contract.
+
+## License and self-hosting
+
+MIT, see [LICENSE](LICENSE). Copyright TradeX International AG. The names „SupportX“ and „ASEIO“ and their logos are not covered by the license; forks please use their own name. Operators bring their own Microsoft tenant, weclapp account, AI provider key and hosting. The license does not grant platform access or waive platform terms. No proprietary application code or real customer records are included; demo data uses reserved `.invalid` domains.

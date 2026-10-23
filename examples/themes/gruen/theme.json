@@ -1,0 +1,21 @@
+{
+  "productName": "Kundenservice",
+  "tagline": "Anfragen aus Shop und Marktplätzen",
+  "logo": "logo.svg",
+  "colors": {
+    "background": "#f4f7f2",
+    "surface": "#ffffff",
+    "text": "#1f2a1c",
+    "textSecondary": "#36442f",
+    "muted": "#66735f",
+    "soft": "#a3ae9c",
+    "line": "#dfe6da",
+    "primary": "#2f6b2a",
+    "primaryText": "#ffffff",
+    "accent": "#2f6b2a"
+  },
+  "fonts": {
+    "sans": "\"Helvetica Neue\", Arial, sans-serif"
+  },
+  "radius": 8
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=SupportX: neuen Stand vom Deploy-Zweig holen und neu starten
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/supportx
+ExecStart=/opt/supportx/deploy/auto-update.sh
