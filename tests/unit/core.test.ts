@@ -41,6 +41,14 @@ describe("routeMessage", () => {
     assert.equal(d.sourcePlatform, "docmorris");
     assert.equal(d.merchantAccountId, "acc-dm");
   });
+  it("recognises Amazon buyer messages without a rule, but no look-alikes", () => {
+    const amz = routeMessage({ from: { address: "abc123@marketplace.amazon.de" }, to: [], subject: "Frage" }, [], fallback);
+    assert.equal(amz.sourcePlatform, "amazon");
+    assert.equal(amz.ruleId, null);
+    for (const address of ["x@marketplace.amazon.de.evil.invalid", "x@evilmarketplace.amazon.de", "seller-notification@amazon.de"]) {
+      assert.equal(routeMessage({ from: { address }, to: [], subject: "Frage" }, [], fallback).sourcePlatform, "email", address);
+    }
+  });
   it("does not match look-alike domains", () => {
     const d = routeMessage({ from: { address: "x@evil-docmorris-demo.invalid" }, to: [], subject: "Hallo" }, rules, fallback);
     assert.equal(d.ruleId, null);

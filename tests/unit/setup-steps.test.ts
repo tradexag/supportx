@@ -20,14 +20,14 @@ test("nothing set up: every card starts with its first step, none is connected",
   assert.equal(weclappSetup(empty).next?.key, "erp");
 });
 
-test("API market: connected once its own connection is healthy; eBay needs the seller login first", () => {
+test("API market: done once its own connection is healthy; eBay needs the seller login first", () => {
   const unchecked = marketSetup("kaufland", { ...empty, connections: [conn("k1", "kaufland_tickets", { health: "unknown" })] });
   assert.equal(unchecked.connected, false);
   assert.equal(unchecked.next?.key, "check");
   const ok = marketSetup("kaufland", { ...empty, connections: [conn("k1", "kaufland_tickets")] });
   assert.equal(ok.connected, true);
-  assert.equal(ok.next?.key, "route");
-  assert.equal(ok.steps.some((st) => st.key === "account"), false, "no seller-account step: orders are searched in all of weclapp");
+  assert.equal(ok.next, null, "nothing left to do: no reply-route or seller-account step");
+  assert.deepEqual(ok.steps.map((st) => st.key), ["connect", "check"]);
 
   const ebay = marketSetup("ebay", { ...empty, connections: [conn("e1", "ebay_messages", { health: "unknown" })] });
   assert.equal(ebay.next?.key, "ebay_login");
@@ -35,40 +35,29 @@ test("API market: connected once its own connection is healthy; eBay needs the s
   assert.equal(paused.connected, false, "a paused connection does not count");
 });
 
-test("a connection of another market never counts, routes only count on the market's own connection", () => {
-  const input: SetupInput = {
-    ...empty,
-    connections: [conn("k1", "kaufland_tickets"), conn("g1", "microsoft_graph")],
-    accounts: [{ platform: "kaufland", paused: false }],
-    routes: [{ connection_id: "g1", source_platform: "kaufland" }],
-  };
+test("a connection of another market never counts", () => {
+  const input: SetupInput = { ...empty, connections: [conn("k1", "kaufland_tickets"), conn("g1", "microsoft_graph")] };
   assert.equal(marketSetup("ebay", input).connected, false);
-  const k = marketSetup("kaufland", input);
-  assert.equal(k.steps.find((s) => s.key === "route")!.done, false);
-  assert.equal(k.next?.key, "route");
-  const done = marketSetup("kaufland", { ...input, routes: [{ connection_id: "k1", source_platform: "kaufland" }] });
-  assert.equal(done.next, null);
+  assert.equal(marketSetup("kaufland", input).connected, true);
 });
 
-test("mail market: connected only after the marketplace step is ticked off, with a healthy mailbox and a rule or the mailbox default", () => {
-  const graph = conn("g1", "microsoft_graph", { default_source_platform: "shopify" });
-  const ticked = { shopify: { at: "2026-10-23T09:00:00Z", by: "Alex" }, docmorris: { at: "2026-10-23T09:00:00Z", by: null } };
+test("mail market: done once the marketplace step is ticked off and the mailbox is healthy, no rule needed", () => {
+  const graph = conn("g1", "microsoft_graph");
+  const ticked = { amazon: { at: "2026-10-26T21:00:00Z", by: "Alex" }, docmorris: { at: "2026-10-23T09:00:00Z", by: null } };
   const unticked = marketSetup("shopify", { ...empty, connections: [graph] });
   assert.equal(unticked.connected, false, "mail not yet set up at Shopify");
   assert.equal(unticked.next?.key, "external");
-  const shop = marketSetup("shopify", { ...empty, connections: [graph], confirmations: ticked });
-  assert.equal(shop.connected, true, "ticked off and the mailbox default routes to Shopify");
-  const ext = shop.steps.find((s) => s.key === "external")!;
-  assert.equal(ext.done, true);
+  const amazon = marketSetup("amazon", { ...empty, connections: [graph], confirmations: ticked });
+  assert.equal(amazon.connected, true);
+  assert.equal(amazon.next, null);
+  assert.deepEqual(amazon.steps.map((st) => st.key), ["external", "mailbox"]);
+  const ext = amazon.steps[0]!;
   assert.equal(ext.action, "unconfirm");
-  assert.match(ext.hint!, /Alex am 23\.10\.2026/);
-  const dm = marketSetup("docmorris", { ...empty, connections: [graph], confirmations: ticked });
-  assert.equal(dm.connected, false);
-  assert.equal(dm.next?.key, "rule");
-  const withRule = marketSetup("docmorris", { ...empty, connections: [graph], rules: [{ connection_id: "g1", source_platform: "docmorris" }], confirmations: ticked });
-  assert.equal(withRule.connected, true);
-  const broken = marketSetup("docmorris", { ...empty, connections: [{ ...graph, health: "error" }], rules: [{ connection_id: "g1", source_platform: "docmorris" }], confirmations: ticked });
+  assert.match(ext.hint!, /Alex am 26\.10\.2026/);
+  assert.equal(marketSetup("docmorris", { ...empty, connections: [graph], confirmations: ticked }).connected, true);
+  const broken = marketSetup("docmorris", { ...empty, connections: [{ ...graph, health: "error" }], confirmations: ticked });
   assert.equal(broken.connected, false);
+  assert.equal(broken.next?.key, "mailbox");
 });
 
 test("errors surface on the card; weclapp is connected only after a successful check", () => {
@@ -81,6 +70,4 @@ test("errors surface on the card; weclapp is connected only after a successful c
 test("steps that need a connection offer no button until it exists", () => {
   const k = marketSetup("kaufland", empty);
   assert.equal(k.steps.find((s) => s.key === "check")!.action, undefined);
-  assert.equal(k.steps.find((s) => s.key === "route")!.action, undefined);
-  assert.equal(marketSetup("amazon", empty).steps.find((s) => s.key === "rule")!.action, undefined);
 });

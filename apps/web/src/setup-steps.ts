@@ -1,5 +1,8 @@
 /**
- * Setup checklist per channel for the settings page: what is done, what is next.
+ * Setup checklist per channel for the settings page: only what the merchant must do.
+ * Reply routes and routing rules are not steps here: sending stays locked until a
+ * route is checked (connection card → Erweitert), and mail markets are recognised
+ * by sender (built in for Amazon, otherwise mails arrive as plain e-mail).
  * Pure (no React, no fetch) so it can be unit-tested; the state comes only from
  * the settings payload. A step that happens outside SupportX (e.g. a setting in
  * Seller Central) has `external`: SupportX cannot see it, so it only counts as
@@ -89,17 +92,13 @@ export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
     const steps: SetupStep[] = [{ key: "connect", ...ZUGANG[market], done: own.length > 0, action: "connect" }];
     if (market === "ebay") steps.push({ key: "ebay_login", title: "Bei eBay mit dem Verkäuferkonto anmelden", done: own.some((c) => !!c.config.sellerUsername), action: "ebay_login" });
     steps.push({ key: "check", title: "Verbindung testen", done: own.some(healthy), action: "check" });
-    const ids = new Set(own.map((c) => c.id));
-    steps.push({ key: "route", title: "Testantwort prüfen und als Antwortweg vermerken", hint: "Erst danach lässt sich der Versand freischalten.", done: input.routes.some((r) => ids.has(r.connection_id) && r.source_platform === market), action: "route" });
-    // Without a connection, "test", "log in" and "note a reply route" have nothing to act on.
+    // Without a connection, "test" and "log in" have nothing to act on.
     if (own.length === 0) for (const step of steps) if (step.action !== "connect") delete step.action;
     const err = own.find((c) => c.health === "error" && !c.paused)?.last_error ?? null;
     return finish(market, LABEL[market], WAY[market], steps, own.some(healthy), err);
   }
   const graph = input.connections.filter((c) => c.kind === "microsoft_graph");
-  const ids = new Set(graph.map((c) => c.id));
   const mailboxOk = graph.some(healthy);
-  const routed = input.rules.some((r) => ids.has(r.connection_id) && r.source_platform === market) || graph.some((c) => c.default_source_platform === market);
   const confirmed = input.confirmations?.[market];
   const external: SetupStep = confirmed
     ? { key: "external", title: EXTERN[market].title, hint: `Abgehakt${confirmed.by ? ` von ${confirmed.by}` : ""} am ${fmtDay(confirmed.at)}.`, done: true, external: true, action: "unconfirm" }
@@ -107,11 +106,8 @@ export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
   const steps: SetupStep[] = [
     external,
     { key: "mailbox", title: "Microsoft-Postfach verbunden und geprüft", hint: "Siehe Karte „Microsoft-Postfach“.", done: mailboxOk },
-    { key: "rule", title: "Zuordnungsregel anlegen", hint: "Absender-Domain aus einer echten Mail, damit SupportX die Mails als " + LABEL[market] + " erkennt.", done: routed, action: "rule" },
-    { key: "route", title: "Testantwort prüfen und als Antwortweg vermerken", hint: "Erst danach lässt sich der Versand freischalten.", done: input.routes.some((r) => ids.has(r.connection_id) && r.source_platform === market), action: "route" },
   ];
-  if (graph.length === 0) for (const step of steps) if (step.action === "rule" || step.action === "route") delete step.action;
-  return finish(market, LABEL[market], WAY[market], steps, !!confirmed && mailboxOk && routed, null);
+  return finish(market, LABEL[market], WAY[market], steps, !!confirmed && mailboxOk, null);
 }
 
 function fmtDay(iso: string): string {

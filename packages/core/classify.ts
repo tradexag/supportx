@@ -26,7 +26,23 @@ function domainMatches(domain: string, pattern: string): boolean {
 }
 
 /**
+ * Sender domains SupportX knows without an operator rule. Amazon's buyer-seller
+ * messaging relays every buyer mail from <id>@marketplace.amazon.<tld>.
+ */
+const KNOWN_SENDERS: ReadonlyArray<[RegExp, SourcePlatform]> = [
+  [/^marketplace\.amazon\.(de|at|fr|it|es|nl|pl|se|com\.be|co\.uk|com)$/, "amazon"],
+];
+
+/** Platform recognised from the sender domain alone, or null. */
+export function knownPlatformOf(address: string): SourcePlatform | null {
+  const domain = domainOf(address.toLowerCase());
+  for (const [pattern, platform] of KNOWN_SENDERS) if (pattern.test(domain)) return platform;
+  return null;
+}
+
+/**
  * Decide source platform and merchant account from operator-configured rules.
+ * Operator rules win, then known marketplace senders, then the connection default.
  * Rules are evaluated against transport metadata only (sender, recipient, subject);
  * text in the message body can never select a platform or an account.
  */
@@ -47,6 +63,8 @@ export function routeMessage(
       (rule.matchType === "subject_contains" && message.subject.toLowerCase().includes(pattern));
     if (hit) return { sourcePlatform: rule.sourcePlatform, merchantAccountId: rule.merchantAccountId, ruleId: rule.id };
   }
+  const known = knownPlatformOf(from);
+  if (known) return { sourcePlatform: known, merchantAccountId: null, ruleId: null };
   return { ...fallback, ruleId: null };
 }
 

@@ -27,7 +27,6 @@ interface SettingsData {
 }
 
 const PLATFORMS = ["email", "amazon", "ebay", "kaufland", "shop_apotheke", "docmorris", "shopify"];
-const MATCH_TYPES: Record<string, string> = { from_domain: "Absender-Domain", from_address: "Absender-Adresse", to_address: "Empfänger-Adresse", subject_contains: "Betreff enthält" };
 const IMPL_LABEL: Record<string, string> = { implemented: "umgesetzt", via_microsoft_mail: "über Microsoft-Postfach", planned: "geplant" };
 const KIND_LABEL: Record<ChannelKind, string> = { microsoft_graph: "Microsoft-Postfach", ebay_messages: "eBay", kaufland_tickets: "Kaufland", mirakl_inbox: "Shop Apotheke" };
 const CAP_LABEL: Record<string, string> = { not_implemented: "nicht umgesetzt", documented: "dokumentiert, ungetestet", configured: "umgesetzt, Kontotest offen", verified: "mit Konto geprüft" };
@@ -79,8 +78,6 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
       c={c}
       owner={owner}
       duplicate={mailboxCount(c) > 1}
-      rules={data.rules.filter((r) => r.connection_id === c.id)}
-      routes={data.routes.filter((r) => r.connection_id === c.id)}
       base={base}
       act={act}
       checkResult={checkResult}
@@ -125,15 +122,12 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
           if (a === "ebay_login" && own[0]) return void act(async () => { const r = await api<{ url: string }>("POST", `${base}/connections/${own[0]!.id}/ebay/authorize`); window.location.assign(r.url); });
           setPanel({ card: m, action: a });
         };
-        const connectionId = kind ? own[0]?.id : graph?.id;
         return (
           <SetupCard key={m} setup={marketSetup(m, { ...data, confirmations: data.workspace.setup_confirmations })} owner={owner} onAction={onAction} graphMailbox={kind ? undefined : graph?.config.mailbox}>
             {own.map((c) => connectionCard(c))}
             {owner && open("connect") && m === "ebay" && <EbayForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/ebay`, body), () => "eBay angelegt. Jetzt „Bei eBay anmelden“ klicken."); }} />}
             {owner && open("connect") && m === "kaufland" && <KauflandForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/kaufland`, body), () => "Kaufland verbunden. Bitte einmal „Verbindung testen“."); }} />}
             {owner && open("connect") && m === "shop_apotheke" && <MiraklForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/mirakl`, body), () => "Shop Apotheke verbunden. Bitte einmal „Verbindung testen“."); }} />}
-            {owner && open("rule") && (graph ? <div className="inset"><p className="muted small">Absender-Domain aus einer echten {PLATFORM_LABEL[m]}-Mail eintragen.</p><RuleForm preset={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${graph.id}/rules`, body), () => "Regel angelegt."); }} /></div> : <p className="notice small">Zuerst das Microsoft-Postfach verbinden.</p>)}
-            {owner && open("route") && (connectionId ? <div className="inset"><RouteForm defaultPlatform={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${connectionId}/routes`, body), () => "Antwortweg als geprüft vermerkt."); }} /></div> : <p className="notice small">Zuerst die Verbindung anlegen.</p>)}
           </SetupCard>
         );
       })}
@@ -254,8 +248,8 @@ function explainError(raw: string): string {
   return raw;
 }
 
-function ConnectionCard({ c, owner, duplicate, rules, routes, base, act, checkResult }: {
-  c: Connection; owner: boolean; duplicate: boolean; rules: Rule[]; routes: Route[]; base: string;
+function ConnectionCard({ c, owner, duplicate, base, act, checkResult }: {
+  c: Connection; owner: boolean; duplicate: boolean; base: string;
   act: (fn: () => Promise<unknown>, success?: (result: unknown) => string) => Promise<void>; checkResult: (r: unknown) => string;
 }) {
   const [secretOpen, setSecretOpen] = useState(false);
@@ -283,7 +277,7 @@ function ConnectionCard({ c, owner, duplicate, rules, routes, base, act, checkRe
         )}
       </div>
       {duplicate && <p className="notice warn small">Dieses Postfach ist mehrfach verbunden, dadurch kommt jede Mail doppelt an. Behalte eine Verbindung, die anderen löschen.</p>}
-      {c.kind === "mirakl_inbox" && !c.config.backgroundSyncAllowed && <p className="notice small">Shop Apotheke wird nur per Klick auf „Jetzt abrufen“ gelesen, bis der Betreiber einen Hintergrundabruf erlaubt (siehe Erweitert).</p>}
+      {c.kind === "mirakl_inbox" && !c.config.backgroundSyncAllowed && <p className="notice small">Shop Apotheke liest SupportX nur, wenn du „Jetzt abrufen“ klickst. So verlangt es Mirakl, bis Shop Apotheke einen automatischen Abruf erlaubt.</p>}
       {c.last_error && !c.paused && <p className="notice bad small">{explainError(c.last_error)}</p>}
       {owner && (
         <div className="row wrap">
@@ -294,66 +288,6 @@ function ConnectionCard({ c, owner, duplicate, rules, routes, base, act, checkRe
         </div>
       )}
       {secretOpen && owner && <SecretForm onSubmit={(clientSecret) => { setSecretOpen(false); void act(() => api("POST", `${base}/connections/${c.id}/secret`, { clientSecret }), () => "Schlüssel ausgetauscht. Bitte einmal „Verbindung testen“."); }} />}
-      <details className="more">
-        <summary>Erweitert: {graph ? "Zuordnung, " : ""}Antwortwege, technische Angaben</summary>
-        {c.kind === "mirakl_inbox" && owner && (<>
-          <h4>Hintergrundabruf</h4>
-          <p className="muted small">Mirakl sieht das Lesen der Nachrichten nur beim Öffnen des Posteingangs vor. Erst wenn Shop Apotheke einen regelmäßigen Abruf erlaubt hat, hier mit Nachweis eintragen.</p>
-          <MiraklBackgroundForm connection={c} onSubmit={(body) => act(() => api("POST", `${base}/connections/${c.id}/mirakl-background-sync`, body), () => "Gespeichert.")} />
-        </>)}
-        {graph && (<>
-        <h4>Zuordnungsregeln</h4>
-        <p className="muted small">Ordnen Mails anhand von Absender, Empfänger oder Betreff einer Plattform zu, nie anhand des Textes. Ohne Treffer gilt: {PLATFORM_LABEL[c.default_source_platform]}.</p>
-        {rules.length > 0 && (
-          <table>
-            <thead><tr><th>Prio</th><th>Regel</th><th>Plattform</th><th /></tr></thead>
-            <tbody>
-              {rules.map((r) => (
-                <tr key={r.id}>
-                  <td>{r.priority}</td><td>{MATCH_TYPES[r.match_type]}: <code>{r.pattern}</code></td><td>{PLATFORM_LABEL[r.source_platform]}</td>
-                  <td>{owner && <button className="link" onClick={() => act(() => api("DELETE", `${base}/rules/${r.id}`))}>entfernen</button>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {owner && <RuleForm onSubmit={(body) => act(() => api("POST", `${base}/connections/${c.id}/rules`, body), () => "Regel angelegt.")} />}
-        </>)}
-        <h4>Antwortwege und Versand</h4>
-        <p className="muted small">Bevor SupportX verschicken darf, je Plattform einmal an einer echten Nachricht prüfen: Absender, Reply-To, Zuordnung und eine Testantwort, die beim Kunden bzw. im Marktplatz ankommt.</p>
-        {routes.length === 0 && <p className="small">Noch kein Antwortweg geprüft, der Versand bleibt gesperrt.</p>}
-        <ul>
-          {routes.map((r) => (
-            <li key={r.id} className="small">
-              <strong>{PLATFORM_LABEL[r.source_platform]}</strong> geprüft {fmtDate(r.verified_at)} von {r.verified_by ?? "?"}: {r.evidence_note}{" "}
-              {owner && <button className="link" onClick={() => act(() => api("DELETE", `${base}/connections/${c.id}/routes/${r.source_platform}`))}>zurückziehen</button>}
-            </li>
-          ))}
-        </ul>
-        {owner && <RouteForm defaultPlatform={graph ? "docmorris" : c.default_source_platform} onSubmit={(body) => act(() => api("POST", `${base}/connections/${c.id}/routes`, body), () => "Antwortweg als geprüft vermerkt.")} />}
-        {owner && <button onClick={() => { if (!c.send_enabled && !window.confirm("Versand für diese Verbindung freischalten? Danach können freigegebene Antworten wirklich an Kunden gehen.")) return; void act(() => api("POST", `${base}/connections/${c.id}/send-enabled`, { enabled: !c.send_enabled })); }}>{c.send_enabled ? "Versand sperren" : "Versand freischalten"}</button>}
-        <h4>Technische Angaben</h4>
-        <p className="muted small">Zugangsdaten bleiben verborgen. Die IDs lassen sich bei Bedarf einblenden, Schlüssel nie.</p>
-        {graph && <HiddenValue label="Verzeichnis-ID" value={c.config.tenantId} />}
-        {(graph || c.kind === "ebay_messages") && <HiddenValue label="Anwendungs-ID" value={c.config.clientId} suffix={c.config.sandbox ? " (Sandbox)" : ""} />}
-        {c.kind === "ebay_messages" && <HiddenValue label="RuName" value={c.config.ruName} />}
-        {c.kind === "mirakl_inbox" && c.config.shopId && <HiddenValue label="Shop-ID" value={c.config.shopId} />}
-        <div className="kv small"><span>Schlüssel</span><span>{c.has_secret ? "gespeichert (verschlüsselt)" : "fehlt"}</span></div>
-        {c.config.pollIntervalSec ? <div className="kv small"><span>Abruf</span><span>höchstens alle {Math.round(c.config.pollIntervalSec / 60)} Minuten</span></div> : null}
-        {c.config.graphBaseUrl && <div className="kv small"><span>Testendpunkt</span><code>{c.config.graphBaseUrl}</code></div>}
-      </details>
-    </div>
-  );
-}
-
-/** Stored access data is hidden by default; only an explicit click shows it. */
-function HiddenValue({ label, value, suffix = "" }: { label: string; value?: string; suffix?: string }) {
-  const [show, setShow] = useState(false);
-  if (!value) return null;
-  return (
-    <div className="kv small">
-      <span>{label}</span>
-      <span>{show ? <code>{value}{suffix}</code> : <span>gespeichert{suffix}</span>} <button type="button" className="link" onClick={() => setShow(!show)}>{show ? "verbergen" : "anzeigen"}</button></span>
     </div>
   );
 }
@@ -466,32 +400,6 @@ function ErpForm({ current, onSubmit }: { current: string; onSubmit: (body: unkn
   );
 }
 
-function RuleForm({ onSubmit, preset }: { onSubmit: (body: unknown) => void; preset?: string }) {
-  const [matchType, setMatchType] = useState("from_domain");
-  const [pattern, setPattern] = useState("");
-  const [platform, setPlatform] = useState(preset ?? "docmorris");
-  return (
-    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ matchType, pattern, sourcePlatform: platform, merchantAccountId: null, priority: 10 }); setPattern(""); }}>
-      <select value={matchType} onChange={(e) => setMatchType(e.target.value)}>{Object.entries(MATCH_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
-      <input placeholder="Muster, z. B. absender-domain.example" value={pattern} onChange={(e) => setPattern(e.target.value)} required />
-      <select value={platform} onChange={(e) => setPlatform(e.target.value)}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select>
-      <button type="submit">Regel hinzufügen</button>
-    </form>
-  );
-}
-
-function RouteForm({ defaultPlatform, onSubmit }: { defaultPlatform: string; onSubmit: (body: unknown) => void }) {
-  const [platform, setPlatform] = useState(defaultPlatform);
-  const [note, setNote] = useState("");
-  return (
-    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ sourcePlatform: platform, evidenceNote: note }); setNote(""); }}>
-      <select value={platform} onChange={(e) => setPlatform(e.target.value)}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select>
-      <input placeholder="Nachweis: Datum, Nachricht, Absender/Reply-To, Ergebnis der Testantwort" value={note} onChange={(e) => setNote(e.target.value)} required minLength={10} size={50} />
-      <button type="submit">Antwortweg als geprüft vermerken</button>
-    </form>
-  );
-}
-
 function GraphForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void; onCancel: () => void }) {
   const [form, setForm] = useState({ displayName: "", tenantId: "", clientId: "", clientSecret: "", mailbox: "", ownAddresses: "", defaultSourcePlatform: "email" });
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
@@ -573,19 +481,3 @@ function MiraklForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void;
   );
 }
 
-function MiraklBackgroundForm({ connection, onSubmit }: { connection: Connection; onSubmit: (body: unknown) => void }) {
-  const [note, setNote] = useState("");
-  if (connection.config.backgroundSyncAllowed) {
-    return (
-      <p className="small">Erlaubt: {connection.config.backgroundSyncEvidence}{" "}
-        <button className="link" onClick={() => onSubmit({ allowed: false })}>wieder ausschalten</button>
-      </p>
-    );
-  }
-  return (
-    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ allowed: true, evidenceNote: note }); setNote(""); }}>
-      <input placeholder="Nachweis: wer bei Shop Apotheke es erlaubt hat, wann, wo festgehalten" value={note} onChange={(e) => setNote(e.target.value)} required minLength={10} size={50} />
-      <button type="submit">Hintergrundabruf erlauben</button>
-    </form>
-  );
-}
