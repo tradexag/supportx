@@ -26,8 +26,8 @@ test("API market: connected once its own connection is healthy; eBay needs the s
   assert.equal(unchecked.next?.key, "check");
   const ok = marketSetup("kaufland", { ...empty, connections: [conn("k1", "kaufland_tickets")] });
   assert.equal(ok.connected, true);
-  assert.equal(ok.next?.key, "route", "the weclapp mapping is optional and never the next step");
-  assert.equal(ok.steps.find((st) => st.key === "account")!.optional, true);
+  assert.equal(ok.next?.key, "route");
+  assert.equal(ok.steps.some((st) => st.key === "account"), false, "no seller-account step: orders are searched in all of weclapp");
 
   const ebay = marketSetup("ebay", { ...empty, connections: [conn("e1", "ebay_messages", { health: "unknown" })] });
   assert.equal(ebay.next?.key, "ebay_login");
@@ -82,6 +82,5 @@ test("steps that need a connection offer no button until it exists", () => {
   const k = marketSetup("kaufland", empty);
   assert.equal(k.steps.find((s) => s.key === "check")!.action, undefined);
   assert.equal(k.steps.find((s) => s.key === "route")!.action, undefined);
-  assert.equal(k.steps.find((s) => s.key === "account")!.action, "account");
   assert.equal(marketSetup("amazon", empty).steps.find((s) => s.key === "rule")!.action, undefined);
 });

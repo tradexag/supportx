@@ -135,8 +135,6 @@ ol.steps li.done .step-title { color: var(--muted); }
 ol.steps li.current .mark { border-color: var(--signal); color: var(--signal); }
 ol.steps li.current .step-title { font-weight: 600; }
 ol.steps li.external .mark { border-style: dashed; }
-ol.steps li.optional .mark { border-style: dotted; color: var(--muted); }
-ol.steps li.optional .step-title { color: var(--muted); }
 .step-body { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 ol.steps li > button.link { flex: none; font-size: 12px; }
 .facts { border-top: 1px solid var(--line); padding-top: 6px; }

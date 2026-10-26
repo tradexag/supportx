@@ -79,7 +79,6 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
       c={c}
       owner={owner}
       duplicate={mailboxCount(c) > 1}
-      accounts={data.accounts}
       rules={data.rules.filter((r) => r.connection_id === c.id)}
       routes={data.routes.filter((r) => r.connection_id === c.id)}
       base={base}
@@ -99,7 +98,7 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 
       <SetupCard setup={microsoftSetup(data)} owner={owner} onAction={(a) => a === "check" ? checkFirst("microsoft_graph") : setPanel({ card: "microsoft", action: a })}>
         {data.connections.filter((c) => c.kind === "microsoft_graph").map((c) => connectionCard(c))}
-        {owner && panel?.card === "microsoft" && panel.action === "connect" && <GraphForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections`, body), () => "Postfach verbunden. Die ersten Mails kommen in wenigen Minuten."); }} />}
+        {owner && panel?.card === "microsoft" && panel.action === "connect" && <GraphForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections`, body), () => "Postfach verbunden. Die ersten Mails kommen in wenigen Minuten."); }} />}
       </SetupCard>
 
       <SetupCard setup={weclappSetup(data)} owner={owner} onAction={(a) => a === "check" ? void act(() => api("POST", `${base}/erp/check`), checkResult) : setPanel({ card: "weclapp", action: a })}>
@@ -130,29 +129,16 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
         return (
           <SetupCard key={m} setup={marketSetup(m, { ...data, confirmations: data.workspace.setup_confirmations })} owner={owner} onAction={onAction} graphMailbox={kind ? undefined : graph?.config.mailbox}>
             {own.map((c) => connectionCard(c))}
-            {owner && open("connect") && m === "ebay" && <EbayForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/ebay`, body), () => "eBay angelegt. Jetzt „Bei eBay anmelden“ klicken."); }} />}
-            {owner && open("connect") && m === "kaufland" && <KauflandForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/kaufland`, body), () => "Kaufland verbunden. Bitte einmal „Verbindung testen“."); }} />}
-            {owner && open("connect") && m === "shop_apotheke" && <MiraklForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/mirakl`, body), () => "Shop Apotheke verbunden. Bitte einmal „Verbindung testen“."); }} />}
-            {owner && open("account") && <div className="inset"><AccountForm preset={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/merchant-accounts`, body), () => "Zugeordnet."); }} /></div>}
-            {owner && open("rule") && (graph ? <div className="inset"><p className="muted small">Absender-Domain aus einer echten {PLATFORM_LABEL[m]}-Mail eintragen.</p><RuleForm preset={m} accounts={data.accounts} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${graph.id}/rules`, body), () => "Regel angelegt."); }} /></div> : <p className="notice small">Zuerst das Microsoft-Postfach verbinden.</p>)}
+            {owner && open("connect") && m === "ebay" && <EbayForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/ebay`, body), () => "eBay angelegt. Jetzt „Bei eBay anmelden“ klicken."); }} />}
+            {owner && open("connect") && m === "kaufland" && <KauflandForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/kaufland`, body), () => "Kaufland verbunden. Bitte einmal „Verbindung testen“."); }} />}
+            {owner && open("connect") && m === "shop_apotheke" && <MiraklForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/mirakl`, body), () => "Shop Apotheke verbunden. Bitte einmal „Verbindung testen“."); }} />}
+            {owner && open("rule") && (graph ? <div className="inset"><p className="muted small">Absender-Domain aus einer echten {PLATFORM_LABEL[m]}-Mail eintragen.</p><RuleForm preset={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${graph.id}/rules`, body), () => "Regel angelegt."); }} /></div> : <p className="notice small">Zuerst das Microsoft-Postfach verbinden.</p>)}
             {owner && open("route") && (connectionId ? <div className="inset"><RouteForm defaultPlatform={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${connectionId}/routes`, body), () => "Antwortweg als geprüft vermerkt."); }} /></div> : <p className="notice small">Zuerst die Verbindung anlegen.</p>)}
           </SetupCard>
         );
       })}
 
       <h2 className="settings-title">Weitere Einstellungen</h2>
-      <section className="card">
-        <h3>Vertriebskanäle in weclapp</h3>
-        <p className="muted">Optional. SupportX sucht jede Bestellnummer in ganz weclapp. Nur wenn ihr auf einem Marktplatz mehrere Shops habt, legt ihr hier fest, woran deren Aufträge in weclapp erkennbar sind (z. B. Vertriebskanal). Dann sucht SupportX zuerst dort.</p>
-        {data.accounts.length === 0 ? <p className="small muted">Keine Zuordnung, gesucht wird in ganz weclapp.</p> : (
-          <table>
-            <thead><tr><th>Name</th><th>Plattform</th><th>Erkennung in weclapp</th></tr></thead>
-            <tbody>{data.accounts.map((a) => <tr key={a.id}><td>{a.name}{a.paused ? " (pausiert)" : ""}</td><td>{PLATFORM_LABEL[a.platform] ?? a.platform}</td><td><code>{a.order_scope_field}{a.order_scope_field !== "none" ? ` = ${a.order_scope_value}` : ""}</code></td></tr>)}</tbody>
-          </table>
-        )}
-        {owner && <AccountForm onSubmit={(body) => act(() => api("POST", `${base}/merchant-accounts`, body), () => "Zugeordnet.")} />}
-      </section>
-
       <section className="card">
         <h3>Werbung erkennen</h3>
         <p className="muted">Newsletter, Aktionen und Partner-Infos erkennt SupportX selbst und legt sie unter „Werbung &amp; Infos“ ab, ohne Antwortentwurf. Liegt es einmal daneben, im Fall umschalten und dabei „Alle von …“ wählen. Das merkt sich SupportX hier.</p>
@@ -216,11 +202,10 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
   setup: ChannelSetup; owner: boolean; onAction: (a: StepAction) => void; graphMailbox?: string; children?: React.ReactNode;
 }) {
-  const required = setup.steps.filter((s) => !s.optional);
-  const doneCount = required.filter((s) => s.done).length;
-  const countable = required.length;
+  const doneCount = setup.steps.filter((s) => s.done).length;
+  const countable = setup.steps.length;
   const pill = setup.error ? { cls: "pill bad", label: "Fehler" } : setup.connected ? { cls: "pill ok", label: "Angebunden" } : doneCount === 0 ? { cls: "pill muted", label: "Nicht eingerichtet" } : { cls: "pill warn", label: `${doneCount} von ${countable} erledigt` };
-  const ACTION_LABEL: Record<StepAction, string> = { connect: "Jetzt eintragen", ebay_login: "Bei eBay anmelden", check: "Verbindung testen", account: "Zuordnen", rule: "Regel anlegen", route: "Antwortweg vermerken", erp: "Jetzt eintragen", confirm: "Erledigt, abhaken", unconfirm: "Haken entfernen" };
+  const ACTION_LABEL: Record<StepAction, string> = { connect: "Jetzt eintragen", ebay_login: "Bei eBay anmelden", check: "Verbindung testen", rule: "Regel anlegen", route: "Antwortweg vermerken", erp: "Jetzt eintragen", confirm: "Erledigt, abhaken", unconfirm: "Haken entfernen" };
   return (
     <section className={`card setup${setup.connected && !setup.error ? " connected" : ""}`} aria-label={setup.label}>
       <div className="setup-head">
@@ -241,10 +226,10 @@ function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
       )}
       <ol className="steps">
         {setup.steps.map((s, i) => (
-          <li key={s.key} className={s.done ? "done" : s.external ? "external" : s.optional ? "optional" : s === setup.next ? "current" : ""}>
-            <span className="mark" aria-hidden="true">{s.done ? "✓" : s.external ? "→" : s.optional ? "·" : i + 1}</span>
+          <li key={s.key} className={s.done ? "done" : s.external ? "external" : s === setup.next ? "current" : ""}>
+            <span className="mark" aria-hidden="true">{s.done ? "✓" : s.external ? "→" : i + 1}</span>
             <span className="step-body">
-              <span className="step-title">{s.title}{s.external && <span className="tag"> · dort erledigen</span>}{s.optional && !s.done && <span className="tag"> · optional</span>}{s.done && <span className="sr-only"> (erledigt)</span>}</span>
+              <span className="step-title">{s.title}{s.external && <span className="tag"> · dort erledigen</span>}{s.done && <span className="sr-only"> (erledigt)</span>}</span>
               {s.hint && s !== setup.next && (!s.done || s.external) && <span className="muted small">{s.hint}</span>}
             </span>
             {owner && (!s.done || s.action === "unconfirm") && s.action && s !== setup.next && <button className="link" onClick={() => onAction(s.action!)}>{ACTION_LABEL[s.action]}</button>}
@@ -269,8 +254,8 @@ function explainError(raw: string): string {
   return raw;
 }
 
-function ConnectionCard({ c, owner, duplicate, accounts, rules, routes, base, act, checkResult }: {
-  c: Connection; owner: boolean; duplicate: boolean; accounts: Account[]; rules: Rule[]; routes: Route[]; base: string;
+function ConnectionCard({ c, owner, duplicate, rules, routes, base, act, checkResult }: {
+  c: Connection; owner: boolean; duplicate: boolean; rules: Rule[]; routes: Route[]; base: string;
   act: (fn: () => Promise<unknown>, success?: (result: unknown) => string) => Promise<void>; checkResult: (r: unknown) => string;
 }) {
   const [secretOpen, setSecretOpen] = useState(false);
@@ -318,21 +303,21 @@ function ConnectionCard({ c, owner, duplicate, accounts, rules, routes, base, ac
         </>)}
         {graph && (<>
         <h4>Zuordnungsregeln</h4>
-        <p className="muted small">Ordnen Mails anhand von Absender, Empfänger oder Betreff einer Plattform und einem Konto zu, nie anhand des Textes. Ohne Treffer gilt: {PLATFORM_LABEL[c.default_source_platform]} / {accounts.find((a) => a.id === c.default_merchant_account_id)?.name ?? "kein Konto"}.</p>
+        <p className="muted small">Ordnen Mails anhand von Absender, Empfänger oder Betreff einer Plattform zu, nie anhand des Textes. Ohne Treffer gilt: {PLATFORM_LABEL[c.default_source_platform]}.</p>
         {rules.length > 0 && (
           <table>
-            <thead><tr><th>Prio</th><th>Regel</th><th>Plattform</th><th>Konto</th><th /></tr></thead>
+            <thead><tr><th>Prio</th><th>Regel</th><th>Plattform</th><th /></tr></thead>
             <tbody>
               {rules.map((r) => (
                 <tr key={r.id}>
-                  <td>{r.priority}</td><td>{MATCH_TYPES[r.match_type]}: <code>{r.pattern}</code></td><td>{PLATFORM_LABEL[r.source_platform]}</td><td>{r.merchant_account_name ?? "–"}</td>
+                  <td>{r.priority}</td><td>{MATCH_TYPES[r.match_type]}: <code>{r.pattern}</code></td><td>{PLATFORM_LABEL[r.source_platform]}</td>
                   <td>{owner && <button className="link" onClick={() => act(() => api("DELETE", `${base}/rules/${r.id}`))}>entfernen</button>}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-        {owner && <RuleForm accounts={accounts} onSubmit={(body) => act(() => api("POST", `${base}/connections/${c.id}/rules`, body), () => "Regel angelegt.")} />}
+        {owner && <RuleForm onSubmit={(body) => act(() => api("POST", `${base}/connections/${c.id}/rules`, body), () => "Regel angelegt.")} />}
         </>)}
         <h4>Antwortwege und Versand</h4>
         <p className="muted small">Bevor SupportX verschicken darf, je Plattform einmal an einer echten Nachricht prüfen: Absender, Reply-To, Zuordnung und eine Testantwort, die beim Kunden bzw. im Marktplatz ankommt.</p>
@@ -469,25 +454,6 @@ function WorkspaceForm({ data, owner, onSave }: { data: SettingsData; owner: boo
   );
 }
 
-function AccountForm({ onSubmit, preset }: { onSubmit: (body: unknown) => void; preset?: string }) {
-  const [name, setName] = useState(preset ? PLATFORM_LABEL[preset] ?? "" : "");
-  const [platform, setPlatform] = useState(preset ?? "amazon");
-  const [field, setField] = useState("salesChannel");
-  const [value, setValue] = useState("");
-  return (
-    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ name, platform, orderScopeField: field, orderScopeValue: value }); }}>
-      <input placeholder="Name, z. B. Shop Apotheke DE" value={name} onChange={(e) => setName(e.target.value)} required />
-      <select value={platform} onChange={(e) => setPlatform(e.target.value)}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select>
-      <select value={field} onChange={(e) => setField(e.target.value)}>
-        <option value="salesChannel">salesChannel</option><option value="ecommerceConnectionId">ecommerceOrder.externalConnectionId</option>
-        <option value="customerId">customerId</option><option value="tag">Tag</option><option value="none">keine Einschränkung</option>
-      </select>
-      {field !== "none" && <input placeholder="Wert in weclapp" value={value} onChange={(e) => setValue(e.target.value)} required />}
-      <button type="submit">Zuordnen</button>
-    </form>
-  );
-}
-
 function ErpForm({ current, onSubmit }: { current: string; onSubmit: (body: unknown) => void }) {
   const [baseUrl, setBaseUrl] = useState(current);
   const [token, setToken] = useState("");
@@ -500,17 +466,15 @@ function ErpForm({ current, onSubmit }: { current: string; onSubmit: (body: unkn
   );
 }
 
-function RuleForm({ accounts, onSubmit, preset }: { accounts: Account[]; onSubmit: (body: unknown) => void; preset?: string }) {
+function RuleForm({ onSubmit, preset }: { onSubmit: (body: unknown) => void; preset?: string }) {
   const [matchType, setMatchType] = useState("from_domain");
   const [pattern, setPattern] = useState("");
   const [platform, setPlatform] = useState(preset ?? "docmorris");
-  const [account, setAccount] = useState(preset ? accounts.find((a) => a.platform === preset)?.id ?? "" : "");
   return (
-    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ matchType, pattern, sourcePlatform: platform, merchantAccountId: account || null, priority: 10 }); setPattern(""); }}>
+    <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ matchType, pattern, sourcePlatform: platform, merchantAccountId: null, priority: 10 }); setPattern(""); }}>
       <select value={matchType} onChange={(e) => setMatchType(e.target.value)}>{Object.entries(MATCH_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
       <input placeholder="Muster, z. B. absender-domain.example" value={pattern} onChange={(e) => setPattern(e.target.value)} required />
       <select value={platform} onChange={(e) => setPlatform(e.target.value)}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select>
-      <select value={account} onChange={(e) => setAccount(e.target.value)}><option value="">Konto: Standard</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
       <button type="submit">Regel hinzufügen</button>
     </form>
   );
@@ -528,15 +492,15 @@ function RouteForm({ defaultPlatform, onSubmit }: { defaultPlatform: string; onS
   );
 }
 
-function GraphForm({ accounts, onSubmit, onCancel }: { accounts: Account[]; onSubmit: (body: unknown) => void; onCancel: () => void }) {
-  const [form, setForm] = useState({ displayName: "", tenantId: "", clientId: "", clientSecret: "", mailbox: "", ownAddresses: "", defaultMerchantAccountId: "", defaultSourcePlatform: "email" });
+function GraphForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void; onCancel: () => void }) {
+  const [form, setForm] = useState({ displayName: "", tenantId: "", clientId: "", clientSecret: "", mailbox: "", ownAddresses: "", defaultSourcePlatform: "email" });
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
   return (
     <form
       className="stack inset"
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ ...form, ownAddresses: form.ownAddresses.split(/[\s,]+/).filter(Boolean), defaultMerchantAccountId: form.defaultMerchantAccountId || null });
+        onSubmit({ ...form, ownAddresses: form.ownAddresses.split(/[\s,]+/).filter(Boolean) });
       }}
     >
       <h4>Postfach verbinden</h4>
@@ -550,68 +514,60 @@ function GraphForm({ accounts, onSubmit, onCancel }: { accounts: Account[]; onSu
         <summary>Optional</summary>
         <label>Weitere eigene Absenderadressen (mit Komma)<input value={form.ownAddresses} onChange={set("ownAddresses")} /></label>
         <label>Plattform, wenn keine Regel passt<select value={form.defaultSourcePlatform} onChange={set("defaultSourcePlatform")}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select></label>
-        <label>Konto, wenn keine Regel passt<select value={form.defaultMerchantAccountId} onChange={set("defaultMerchantAccountId")}><option value="">keins (manuell zuordnen)</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       </details>
       <div className="row"><button type="submit" className="primary">Verbinden</button><button type="button" onClick={onCancel}>Abbrechen</button></div>
     </form>
   );
 }
 
-function AccountSelect({ accounts, value, onChange }: { accounts: Account[]; value: string; onChange: (e: { target: { value: string } }) => void }) {
-  return <label>Konto<select value={value} onChange={onChange}><option value="">keins (manuell zuordnen)</option>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>;
-}
-
 function HiddenField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return <label>{label}<input type="password" value={value} onChange={(e) => onChange(e.target.value)} required autoComplete="off" spellCheck={false} /></label>;
 }
 
-function EbayForm({ accounts, onSubmit, onCancel }: { accounts: Account[]; onSubmit: (body: unknown) => void; onCancel: () => void }) {
-  const [form, setForm] = useState({ displayName: "eBay", clientId: "", clientSecret: "", ruName: "", sandbox: false, defaultMerchantAccountId: "" });
+function EbayForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void; onCancel: () => void }) {
+  const [form, setForm] = useState({ displayName: "eBay", clientId: "", clientSecret: "", ruName: "", sandbox: false });
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
   return (
-    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, clientSecret: form.clientSecret.trim(), defaultMerchantAccountId: form.defaultMerchantAccountId || null });  }}>
+    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, clientSecret: form.clientSecret.trim() });  }}>
       <h4>eBay verbinden</h4>
       <p className="muted small">Die Angaben stehen im eBay Developer Program unter „Application Keys“ (Production). Beim RuName als „Auth accepted URL“ eintragen: <code>{window.location.origin}/oauth/ebay/callback</code>. Danach mit dem Verkäuferkonto „Bei eBay anmelden“.</p>
       <label>Name<input value={form.displayName} onChange={set("displayName")} required /></label>
       <label>App ID (Client ID)<input value={form.clientId} onChange={set("clientId")} required autoComplete="off" /></label>
       <HiddenField label="Cert ID (Client Secret)" value={form.clientSecret} onChange={(v) => setForm({ ...form, clientSecret: v })} />
       <label>RuName<input value={form.ruName} onChange={set("ruName")} required autoComplete="off" /></label>
-      <AccountSelect accounts={accounts} value={form.defaultMerchantAccountId} onChange={set("defaultMerchantAccountId")} />
       <label className="row"><input type="checkbox" checked={form.sandbox} onChange={(e) => setForm({ ...form, sandbox: e.target.checked })} /> Sandbox (nur zum Ausprobieren)</label>
       <div className="row"><button type="submit" className="primary">Anlegen</button><button type="button" onClick={onCancel}>Abbrechen</button></div>
     </form>
   );
 }
 
-function KauflandForm({ accounts, onSubmit, onCancel }: { accounts: Account[]; onSubmit: (body: unknown) => void; onCancel: () => void }) {
-  const [form, setForm] = useState({ displayName: "Kaufland", clientKey: "", secretKey: "", storefronts: "", defaultMerchantAccountId: "" });
+function KauflandForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void; onCancel: () => void }) {
+  const [form, setForm] = useState({ displayName: "Kaufland", clientKey: "", secretKey: "", storefronts: "" });
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
   return (
-    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, clientKey: form.clientKey.trim(), secretKey: form.secretKey.trim(), storefronts: form.storefronts.split(/[\s,]+/).filter(Boolean), defaultMerchantAccountId: form.defaultMerchantAccountId || null });  }}>
+    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, clientKey: form.clientKey.trim(), secretKey: form.secretKey.trim(), storefronts: form.storefronts.split(/[\s,]+/).filter(Boolean) });  }}>
       <h4>Kaufland verbinden</h4>
       <p className="muted small">Die Schlüssel stehen im Kaufland Seller Portal unter Einstellungen → API. Bestehende Schlüssel einfach kopieren, nicht neu erzeugen, sonst hören andere Programme damit auf. Tickets werden höchstens alle 5 Minuten abgefragt.</p>
       <label>Name<input value={form.displayName} onChange={set("displayName")} required /></label>
       <label>Client Key<input value={form.clientKey} onChange={set("clientKey")} required autoComplete="off" spellCheck={false} /></label>
       <HiddenField label="Secret Key" value={form.secretKey} onChange={(v) => setForm({ ...form, secretKey: v })} />
       <label>Storefronts (leer = alle, z. B. de)<input value={form.storefronts} onChange={set("storefronts")} /></label>
-      <AccountSelect accounts={accounts} value={form.defaultMerchantAccountId} onChange={set("defaultMerchantAccountId")} />
       <div className="row"><button type="submit" className="primary">Verbinden</button><button type="button" onClick={onCancel}>Abbrechen</button></div>
     </form>
   );
 }
 
-function MiraklForm({ accounts, onSubmit, onCancel }: { accounts: Account[]; onSubmit: (body: unknown) => void; onCancel: () => void }) {
-  const [form, setForm] = useState({ displayName: "Shop Apotheke", baseUrl: "", apiKey: "", shopId: "", defaultMerchantAccountId: "" });
+function MiraklForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void; onCancel: () => void }) {
+  const [form, setForm] = useState({ displayName: "Shop Apotheke", baseUrl: "", apiKey: "", shopId: "" });
   const set = (key: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
   return (
-    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, apiKey: form.apiKey.trim(), shopId: form.shopId.trim() || undefined, defaultMerchantAccountId: form.defaultMerchantAccountId || null });  }}>
+    <form className="stack inset" onSubmit={(e) => { e.preventDefault(); onSubmit({ ...form, apiKey: form.apiKey.trim(), shopId: form.shopId.trim() || undefined });  }}>
       <h4>Shop Apotheke verbinden</h4>
       <p className="muted small">Shop Apotheke läuft auf Mirakl. Adresse und API-Schlüssel stehen im Mirakl-Backoffice oben rechts unter dem Benutzer → API-Schlüssel. Gelesen wird zunächst nur per Klick auf „Jetzt abrufen“.</p>
       <label>Name<input value={form.displayName} onChange={set("displayName")} required /></label>
       <label>Adresse der Instanz<input placeholder="https://….mirakl.net" value={form.baseUrl} onChange={set("baseUrl")} required /></label>
       <HiddenField label="API-Schlüssel" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} />
       <label>Shop-ID (nur bei mehreren Shops)<input value={form.shopId} onChange={set("shopId")} /></label>
-      <AccountSelect accounts={accounts} value={form.defaultMerchantAccountId} onChange={set("defaultMerchantAccountId")} />
       <div className="row"><button type="submit" className="primary">Verbinden</button><button type="button" onClick={onCancel}>Abbrechen</button></div>
     </form>
   );

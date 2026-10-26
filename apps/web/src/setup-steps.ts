@@ -6,7 +6,7 @@
  * done once an owner has ticked it off (`confirmations`).
  */
 
-export type StepAction = "connect" | "ebay_login" | "check" | "account" | "rule" | "route" | "erp" | "confirm" | "unconfirm";
+export type StepAction = "connect" | "ebay_login" | "check" | "rule" | "route" | "erp" | "confirm" | "unconfirm";
 
 export interface SetupStep {
   key: string;
@@ -14,8 +14,6 @@ export interface SetupStep {
   hint?: string;
   done: boolean;
   external?: boolean;
-  /** Nice to have: never the next step and not counted for "x of y done". */
-  optional?: boolean;
   action?: StepAction;
 }
 
@@ -26,7 +24,7 @@ export interface ChannelSetup {
   connected: boolean;
   error: string | null;
   steps: SetupStep[];
-  /** First open required step. */
+  /** First open step. */
   next: SetupStep | null;
 }
 
@@ -62,7 +60,7 @@ const EXTERN: Record<(typeof MAIL_MARKETS)[number], { title: string; hint: strin
 };
 
 function finish(key: string, label: string, way: string, steps: SetupStep[], connected: boolean, error: string | null): ChannelSetup {
-  return { key, label, way, steps, connected, error, next: steps.find((s) => !s.done && !s.optional) ?? null };
+  return { key, label, way, steps, connected, error, next: steps.find((s) => !s.done) ?? null };
 }
 
 const healthy = (c: { health: string; paused: boolean }) => c.health === "ok" && !c.paused;
@@ -86,21 +84,15 @@ export function weclappSetup(input: SetupInput): ChannelSetup {
 }
 
 export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
-  const account: SetupStep = {
-    key: "account", title: "Vertriebskanal in weclapp zuordnen", optional: true,
-    hint: "Nur nötig, wenn ihr auf diesem Marktplatz mehrere Shops habt. SupportX sucht die Bestellnummer sonst in ganz weclapp.",
-    done: input.accounts.some((a) => a.platform === market && !a.paused), action: "account",
-  };
   if (market === "kaufland" || market === "ebay" || market === "shop_apotheke") {
     const own = input.connections.filter((c) => c.kind === MARKET_KIND[market]);
     const steps: SetupStep[] = [{ key: "connect", ...ZUGANG[market], done: own.length > 0, action: "connect" }];
     if (market === "ebay") steps.push({ key: "ebay_login", title: "Bei eBay mit dem Verkäuferkonto anmelden", done: own.some((c) => !!c.config.sellerUsername), action: "ebay_login" });
     steps.push({ key: "check", title: "Verbindung testen", done: own.some(healthy), action: "check" });
-    steps.push(account);
     const ids = new Set(own.map((c) => c.id));
     steps.push({ key: "route", title: "Testantwort prüfen und als Antwortweg vermerken", hint: "Erst danach lässt sich der Versand freischalten.", done: input.routes.some((r) => ids.has(r.connection_id) && r.source_platform === market), action: "route" });
     // Without a connection, "test", "log in" and "note a reply route" have nothing to act on.
-    if (own.length === 0) for (const step of steps) if (step.action !== "connect" && step.action !== "account") delete step.action;
+    if (own.length === 0) for (const step of steps) if (step.action !== "connect") delete step.action;
     const err = own.find((c) => c.health === "error" && !c.paused)?.last_error ?? null;
     return finish(market, LABEL[market], WAY[market], steps, own.some(healthy), err);
   }
@@ -116,7 +108,6 @@ export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
     external,
     { key: "mailbox", title: "Microsoft-Postfach verbunden und geprüft", hint: "Siehe Karte „Microsoft-Postfach“.", done: mailboxOk },
     { key: "rule", title: "Zuordnungsregel anlegen", hint: "Absender-Domain aus einer echten Mail, damit SupportX die Mails als " + LABEL[market] + " erkennt.", done: routed, action: "rule" },
-    account,
     { key: "route", title: "Testantwort prüfen und als Antwortweg vermerken", hint: "Erst danach lässt sich der Versand freischalten.", done: input.routes.some((r) => ids.has(r.connection_id) && r.source_platform === market), action: "route" },
   ];
   if (graph.length === 0) for (const step of steps) if (step.action === "rule" || step.action === "route") delete step.action;
