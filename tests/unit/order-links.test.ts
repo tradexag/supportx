@@ -16,6 +16,8 @@ test("Shop Apotheke links into the Mirakl back office only when it is connected 
   assert.deepEqual(orderLinks({ order, platforms: ["shop_apotheke"], miraklBaseUrl: "http://shop.mirakl.net" }), []);
 });
 
-test("no link is guessed for unknown numbers", () => {
-  assert.deepEqual(orderLinks({ order: { id: "4", orderNumber: "AU-10003", orderNumberAtCustomer: "1001" }, platforms: ["shopify"], erpBaseUrl: "https://x.weclapp.com/webapp/api/v2" }), []);
+test("the weclapp order page is built from the tenant address, no marketplace link is guessed for unknown numbers", () => {
+  const links = orderLinks({ order: { id: "108472266", orderNumber: "AU-10003", orderNumberAtCustomer: "1001" }, platforms: ["shopify"], erpBaseUrl: "https://firma.weclapp.com/webapp/api/v2" });
+  assert.deepEqual(links.map((l) => l.href), ["https://firma.weclapp.com/app/sales-order/108472266"]);
+  assert.deepEqual(orderLinks({ order: { id: "so-shop-1" }, platforms: [], erpBaseUrl: "https://firma.weclapp.com/webapp/api/v2" }), [], "only numeric weclapp ids");
 });

@@ -19,8 +19,8 @@ export interface OrderLinkInput {
   miraklBaseUrl?: string | null;
 }
 
-/** weclapp web page of a sales order, relative to the tenant origin; {id} is the order id. */
-export const WECLAPP_ORDER_PATH: string | null = null;
+/** weclapp web page of a sales order, relative to the tenant origin; {id} is the order id (confirmed on a live tenant 2026-10-26). */
+export const WECLAPP_ORDER_PATH: string | null = "/app/sales-order/{id}";
 
 const AMAZON_ORDER = /^\d{3}-\d{7}-\d{7}$/;
 const EBAY_ORDER = /^\d{2}-\d{5}-\d{5}$/;
