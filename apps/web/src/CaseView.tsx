@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { orderLinks, type OrderLink } from "./order-links.ts";
 import { api, fmtDate, MATCH_LABEL, OUTBOX_LABEL, PLATFORM_LABEL } from "./api.ts";
 import { INTENT_LABEL } from "./Inbox.tsx";
 
@@ -25,6 +26,7 @@ interface OrderSnapshot {
   retrievedAt: string;
 }
 interface CaseData {
+  linkTargets?: { erp_base_url: string | null; mirakl_base_url: string | null } | null;
   conversation: Rec & { id: string; subject: string; status: string; category: "support" | "info"; category_reason: string | null; customer_address: string | null; source_platform: string; order_match_status: string; merchant_account_id: string | null; merchant_account_name: string | null; connection_name: string; assignee_user_id: string | null; last_error: string | null; order_references: string[] };
   messages: Array<{ id: string; direction: string; kind: string; from_address: string; from_name: string | null; reply_to: Array<{ address: string; name?: string }> | null; subject: string; body_text: string; received_at: string; has_attachments: boolean; removed_remotely_at: string | null }>;
   notes: Array<{ id: string; body: string; created_at: string; author: string }>;
@@ -230,7 +232,17 @@ function OrderPanel({ data, canEdit, onLink }: { data: CaseData; canEdit: boolea
           ))}
         </div>
       )}
-      {order && <OrderDetails order={order} />}
+      {order && (
+        <OrderDetails
+          order={order}
+          links={orderLinks({
+            order,
+            platforms: [c.source_platform, data.accounts.find((a) => a.id === c.merchant_account_id)?.platform],
+            erpBaseUrl: data.linkTargets?.erp_base_url,
+            miraklBaseUrl: data.linkTargets?.mirakl_base_url,
+          })}
+        />
+      )}
       {canEdit && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (reference.trim()) onLink({ reference: reference.trim() }); }}>
           <input placeholder="Bestell-, Rechnungs- oder Sendungsnummer suchen" value={reference} onChange={(e) => setReference(e.target.value)} />
@@ -241,9 +253,14 @@ function OrderPanel({ data, canEdit, onLink }: { data: CaseData; canEdit: boolea
   );
 }
 
-function OrderDetails({ order }: { order: OrderSnapshot }) {
+function OrderDetails({ order, links }: { order: OrderSnapshot; links: OrderLink[] }) {
   return (
     <div className="order">
+      {links.length > 0 && (
+        <div className="row wrap order-links">
+          {links.map((l) => <a key={l.href} className="button" href={l.href} target="_blank" rel="noopener noreferrer">{l.label} ↗</a>)}
+        </div>
+      )}
       <div className="kv"><span>Auftrag</span><strong>{order.orderNumber ?? order.id}</strong></div>
       {order.orderNumberAtCustomer && <div className="kv"><span>Marktplatz-Nr.</span><span>{order.orderNumberAtCustomer}</span></div>}
       <div className="kv"><span>Datum / Status</span><span>{fmtDate(order.orderDate)} · {order.status ?? "–"}</span></div>

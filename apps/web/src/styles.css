@@ -146,3 +146,6 @@ ol.steps li > button.link { flex: none; font-size: 12px; }
 .settings { overflow: visible; max-width: none; margin: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); align-items: start; padding: 16px 20px 40px; }
 .credit { grid-column: 1 / -1; margin: 8px 0 0; }
 .credit a { color: inherit; }
+.order-links { margin-bottom: 8px; }
+a.button { display: inline-block; padding: 6px 12px; border: 1px solid var(--text); color: var(--text); text-decoration: none; font-size: 13px; }
+a.button:hover { background: var(--text); color: var(--card); }

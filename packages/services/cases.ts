@@ -63,7 +63,14 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
     many(ctx.db, "SELECT u.id, u.display_name FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role IN ('owner','agent') ORDER BY u.display_name", [ws]),
   ]);
   const send = await sendBlockers(ctx, ctx.db, ws, conversationId);
-  return { conversation, messages, notes, orderLink, drafts, approvals, outbox, history, accounts, members, send };
+  // Addresses for links to the order (weclapp tenant, Mirakl back office); no credentials.
+  const linkTargets = await one<{ erp_base_url: string | null; mirakl_base_url: string | null }>(
+    ctx.db,
+    `SELECT (SELECT base_url FROM erp_connections WHERE workspace_id = $1) AS erp_base_url,
+            (SELECT config->>'baseUrl' FROM channel_connections WHERE workspace_id = $1 AND kind = 'mirakl_inbox' ORDER BY created_at LIMIT 1) AS mirakl_base_url`,
+    [ws],
+  );
+  return { conversation, messages, notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets };
 }
 
 /** Counts for the inbox tabs. */
