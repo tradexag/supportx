@@ -133,7 +133,7 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
             {owner && open("connect") && m === "ebay" && <EbayForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/ebay`, body), () => "eBay angelegt. Jetzt „Bei eBay anmelden“ klicken."); }} />}
             {owner && open("connect") && m === "kaufland" && <KauflandForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/kaufland`, body), () => "Kaufland verbunden. Bitte einmal „Verbindung testen“."); }} />}
             {owner && open("connect") && m === "shop_apotheke" && <MiraklForm accounts={data.accounts} onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/mirakl`, body), () => "Shop Apotheke verbunden. Bitte einmal „Verbindung testen“."); }} />}
-            {owner && open("account") && <div className="inset"><AccountForm preset={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/merchant-accounts`, body), () => "Konto angelegt."); }} /></div>}
+            {owner && open("account") && <div className="inset"><AccountForm preset={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/merchant-accounts`, body), () => "Zugeordnet."); }} /></div>}
             {owner && open("rule") && (graph ? <div className="inset"><p className="muted small">Absender-Domain aus einer echten {PLATFORM_LABEL[m]}-Mail eintragen.</p><RuleForm preset={m} accounts={data.accounts} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${graph.id}/rules`, body), () => "Regel angelegt."); }} /></div> : <p className="notice small">Zuerst das Microsoft-Postfach verbinden.</p>)}
             {owner && open("route") && (connectionId ? <div className="inset"><RouteForm defaultPlatform={m} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/${connectionId}/routes`, body), () => "Antwortweg als geprüft vermerkt."); }} /></div> : <p className="notice small">Zuerst die Verbindung anlegen.</p>)}
           </SetupCard>
@@ -142,15 +142,15 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 
       <h2 className="settings-title">Weitere Einstellungen</h2>
       <section className="card">
-        <h3>Verkäuferkonten</h3>
-        <p className="muted">Ein Konto je Marktplatz-Auftritt. Es legt fest, woran seine Bestellungen in weclapp erkannt werden. Bestellungen außerhalb werden nie zugeordnet.</p>
-        {data.accounts.length === 0 ? <p className="notice">Noch kein Konto angelegt.</p> : (
+        <h3>Vertriebskanäle in weclapp</h3>
+        <p className="muted">Optional. SupportX sucht jede Bestellnummer in ganz weclapp. Nur wenn ihr auf einem Marktplatz mehrere Shops habt, legt ihr hier fest, woran deren Aufträge in weclapp erkennbar sind (z. B. Vertriebskanal). Dann sucht SupportX zuerst dort.</p>
+        {data.accounts.length === 0 ? <p className="small muted">Keine Zuordnung, gesucht wird in ganz weclapp.</p> : (
           <table>
             <thead><tr><th>Name</th><th>Plattform</th><th>Erkennung in weclapp</th></tr></thead>
             <tbody>{data.accounts.map((a) => <tr key={a.id}><td>{a.name}{a.paused ? " (pausiert)" : ""}</td><td>{PLATFORM_LABEL[a.platform] ?? a.platform}</td><td><code>{a.order_scope_field}{a.order_scope_field !== "none" ? ` = ${a.order_scope_value}` : ""}</code></td></tr>)}</tbody>
           </table>
         )}
-        {owner && <AccountForm onSubmit={(body) => act(() => api("POST", `${base}/merchant-accounts`, body), () => "Konto angelegt.")} />}
+        {owner && <AccountForm onSubmit={(body) => act(() => api("POST", `${base}/merchant-accounts`, body), () => "Zugeordnet.")} />}
       </section>
 
       <section className="card">
@@ -216,10 +216,11 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
   setup: ChannelSetup; owner: boolean; onAction: (a: StepAction) => void; graphMailbox?: string; children?: React.ReactNode;
 }) {
-  const doneCount = setup.steps.filter((s) => s.done).length;
-  const countable = setup.steps.length;
+  const required = setup.steps.filter((s) => !s.optional);
+  const doneCount = required.filter((s) => s.done).length;
+  const countable = required.length;
   const pill = setup.error ? { cls: "pill bad", label: "Fehler" } : setup.connected ? { cls: "pill ok", label: "Angebunden" } : doneCount === 0 ? { cls: "pill muted", label: "Nicht eingerichtet" } : { cls: "pill warn", label: `${doneCount} von ${countable} erledigt` };
-  const ACTION_LABEL: Record<StepAction, string> = { connect: "Jetzt eintragen", ebay_login: "Bei eBay anmelden", check: "Verbindung testen", account: "Konto anlegen", rule: "Regel anlegen", route: "Antwortweg vermerken", erp: "Jetzt eintragen", confirm: "Erledigt, abhaken", unconfirm: "Haken entfernen" };
+  const ACTION_LABEL: Record<StepAction, string> = { connect: "Jetzt eintragen", ebay_login: "Bei eBay anmelden", check: "Verbindung testen", account: "Zuordnen", rule: "Regel anlegen", route: "Antwortweg vermerken", erp: "Jetzt eintragen", confirm: "Erledigt, abhaken", unconfirm: "Haken entfernen" };
   return (
     <section className={`card setup${setup.connected && !setup.error ? " connected" : ""}`} aria-label={setup.label}>
       <div className="setup-head">
@@ -240,10 +241,10 @@ function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
       )}
       <ol className="steps">
         {setup.steps.map((s, i) => (
-          <li key={s.key} className={s.done ? "done" : s.external ? "external" : s === setup.next ? "current" : ""}>
-            <span className="mark" aria-hidden="true">{s.done ? "✓" : s.external ? "→" : i + 1}</span>
+          <li key={s.key} className={s.done ? "done" : s.external ? "external" : s.optional ? "optional" : s === setup.next ? "current" : ""}>
+            <span className="mark" aria-hidden="true">{s.done ? "✓" : s.external ? "→" : s.optional ? "·" : i + 1}</span>
             <span className="step-body">
-              <span className="step-title">{s.title}{s.external && <span className="tag"> · dort erledigen</span>}{s.done && <span className="sr-only"> (erledigt)</span>}</span>
+              <span className="step-title">{s.title}{s.external && <span className="tag"> · dort erledigen</span>}{s.optional && !s.done && <span className="tag"> · optional</span>}{s.done && <span className="sr-only"> (erledigt)</span>}</span>
               {s.hint && s !== setup.next && (!s.done || s.external) && <span className="muted small">{s.hint}</span>}
             </span>
             {owner && (!s.done || s.action === "unconfirm") && s.action && s !== setup.next && <button className="link" onClick={() => onAction(s.action!)}>{ACTION_LABEL[s.action]}</button>}
@@ -475,14 +476,14 @@ function AccountForm({ onSubmit, preset }: { onSubmit: (body: unknown) => void; 
   const [value, setValue] = useState("");
   return (
     <form className="row wrap" onSubmit={(e) => { e.preventDefault(); onSubmit({ name, platform, orderScopeField: field, orderScopeValue: value }); }}>
-      <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+      <input placeholder="Name, z. B. Shop Apotheke DE" value={name} onChange={(e) => setName(e.target.value)} required />
       <select value={platform} onChange={(e) => setPlatform(e.target.value)}>{PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}</select>
       <select value={field} onChange={(e) => setField(e.target.value)}>
         <option value="salesChannel">salesChannel</option><option value="ecommerceConnectionId">ecommerceOrder.externalConnectionId</option>
         <option value="customerId">customerId</option><option value="tag">Tag</option><option value="none">keine Einschränkung</option>
       </select>
       {field !== "none" && <input placeholder="Wert in weclapp" value={value} onChange={(e) => setValue(e.target.value)} required />}
-      <button type="submit">Konto anlegen</button>
+      <button type="submit">Zuordnen</button>
     </form>
   );
 }

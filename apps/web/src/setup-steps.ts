@@ -14,6 +14,8 @@ export interface SetupStep {
   hint?: string;
   done: boolean;
   external?: boolean;
+  /** Nice to have: never the next step and not counted for "x of y done". */
+  optional?: boolean;
   action?: StepAction;
 }
 
@@ -24,7 +26,7 @@ export interface ChannelSetup {
   connected: boolean;
   error: string | null;
   steps: SetupStep[];
-  /** First open step. */
+  /** First open required step. */
   next: SetupStep | null;
 }
 
@@ -60,7 +62,7 @@ const EXTERN: Record<(typeof MAIL_MARKETS)[number], { title: string; hint: strin
 };
 
 function finish(key: string, label: string, way: string, steps: SetupStep[], connected: boolean, error: string | null): ChannelSetup {
-  return { key, label, way, steps, connected, error, next: steps.find((s) => !s.done) ?? null };
+  return { key, label, way, steps, connected, error, next: steps.find((s) => !s.done && !s.optional) ?? null };
 }
 
 const healthy = (c: { health: string; paused: boolean }) => c.health === "ok" && !c.paused;
@@ -85,7 +87,8 @@ export function weclappSetup(input: SetupInput): ChannelSetup {
 
 export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
   const account: SetupStep = {
-    key: "account", title: "Verkäuferkonto anlegen", hint: "Woran sind die Aufträge in weclapp erkennbar (z. B. Vertriebskanal)?",
+    key: "account", title: "Vertriebskanal in weclapp zuordnen", optional: true,
+    hint: "Nur nötig, wenn ihr auf diesem Marktplatz mehrere Shops habt. SupportX sucht die Bestellnummer sonst in ganz weclapp.",
     done: input.accounts.some((a) => a.platform === market && !a.paused), action: "account",
   };
   if (market === "kaufland" || market === "ebay" || market === "shop_apotheke") {

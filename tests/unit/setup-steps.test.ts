@@ -26,7 +26,8 @@ test("API market: connected once its own connection is healthy; eBay needs the s
   assert.equal(unchecked.next?.key, "check");
   const ok = marketSetup("kaufland", { ...empty, connections: [conn("k1", "kaufland_tickets")] });
   assert.equal(ok.connected, true);
-  assert.equal(ok.next?.key, "account");
+  assert.equal(ok.next?.key, "route", "the weclapp mapping is optional and never the next step");
+  assert.equal(ok.steps.find((st) => st.key === "account")!.optional, true);
 
   const ebay = marketSetup("ebay", { ...empty, connections: [conn("e1", "ebay_messages", { health: "unknown" })] });
   assert.equal(ebay.next?.key, "ebay_login");
