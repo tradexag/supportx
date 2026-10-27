@@ -31,6 +31,11 @@ describe("case outcome and export", () => {
     const mine = await conv(s, "Falsche Dose", "Nachricht:\n\nFalsche Dose erhalten; bitte =Ersatz\n\nNachricht anzeigen <https://x.invalid>");
     await conv(other, "Fremd", "geheim");
 
+    const earlier = await conv(s, "Erste Frage", "Wo bleibt meine Dose?");
+    const related = (await getCase(h.ctx, s.agent, mine)).relatedMessages as Array<{ conversation_id: string; body_text: string }>;
+    assert.deepEqual(related.map((m) => m.conversation_id), [earlier], "earlier case of the same customer shows up in the history");
+    assert.ok(!related.some((m) => m.body_text === "geheim"), "never messages from another workspace");
+
     await setOutcome(h.ctx, s.agent, mine, { outcome: "replacement", note: "neue Dose verschickt" });
     const c = (await getCase(h.ctx, s.agent, mine)).conversation as { outcome: string; outcome_note: string; outcome_at: string };
     assert.equal(c.outcome, "replacement");

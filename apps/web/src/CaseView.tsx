@@ -30,6 +30,8 @@ interface CaseData {
   linkTargets?: { erp_base_url: string | null; mirakl_base_url: string | null } | null;
   conversation: Rec & { outcome: string | null; outcome_note: string | null; outcome_at: string | null; id: string; subject: string; status: string; category: "support" | "info"; category_reason: string | null; customer_address: string | null; source_platform: string; order_match_status: string; merchant_account_id: string | null; merchant_account_name: string | null; connection_name: string; assignee_user_id: string | null; last_error: string | null; order_references: string[] };
   messages: Array<{ id: string; direction: string; kind: string; from_address: string; from_name: string | null; reply_to: Array<{ address: string; name?: string }> | null; subject: string; body_text: string; received_at: string; has_attachments: boolean; removed_remotely_at: string | null }>;
+  /** Messages of other cases of the same customer or order, for context. */
+  relatedMessages?: Array<CaseData["messages"][number] & { conversation_id: string; conversation_subject: string }>;
   notes: Array<{ id: string; body: string; created_at: string; author: string }>;
   orderLink: null | { status: string; references_tried: string[]; candidates: Array<{ id: string; orderNumber?: string; matchedBy: string }>; external_order_id: string | null; matched_by: string | null; linked_by: string; error: string | null; snapshot: OrderSnapshot | null; retrieved_at: string | null };
   drafts: Draft[];
@@ -85,127 +87,148 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
   const draft = data.drafts.find((d) => d.status === "proposed" || d.status === "edited") ?? null;
   const approval = draft ? data.approvals.find((a) => a.draft_id === draft.id && a.draft_version === draft.version && !a.invalidated_at && new Date(a.expires_at) > new Date()) : undefined;
 
+  const sender = data.messages.find((m) => m.direction === "inbound")?.from_address ?? c.customer_address ?? "";
+  const setCategory = (category: "support" | "info", remember: "none" | "address" | "domain") =>
+    act(() => api("POST", `${base}/cases/${caseId}/category`, { category, remember }), category === "info" ? "Als Werbung/Info eingeordnet." : "Als Kundenanfrage eingeordnet. Bestellung und Entwurf werden vorbereitet.");
+
+  const timeline = [
+    ...data.messages.map((m) => ({ ...m, from_case: null as string | null })),
+    ...(data.relatedMessages ?? []).map((m) => ({ ...m, from_case: m.conversation_subject || "(ohne Betreff)" })),
+  ].sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime());
+  const messages = (
+    <section className="card">
+      <h3>Verlauf ({timeline.length})</h3>
+      {(data.relatedMessages?.length ?? 0) > 0 && <p className="muted small">Mit Nachrichten aus anderen Fällen desselben Kunden bzw. derselben Bestellung.</p>}
+      {timeline.map((m) => (
+        <article key={m.id} className={`msg ${m.direction === "inbound" ? "inbound" : "outbound"}${m.from_case ? " related" : ""}`}>
+          <div className="row small muted">
+            <span>{m.direction === "inbound" ? "Kunde" : "Antwort"}{m.kind !== "customer" && m.kind !== "echo" ? `, ${KIND_LABEL[m.kind] ?? m.kind}` : ""}{m.from_case ? `, aus Fall „${m.from_case}“` : ""}</span>
+            <span>{fmtDate(m.received_at)}</span>
+          </div>
+          <div className="small muted">
+            Von: {m.from_name ? `${m.from_name} <${m.from_address}>` : m.from_address}
+            {m.has_attachments && ", mit Anhang"}
+            {m.removed_remotely_at && ", im Postfach gelöscht"}
+          </div>
+          <MessageBody text={m.body_text} />
+        </article>
+      ))}
+      <p className="muted small">Kundentexte sind externe Inhalte. Darin enthaltene Anweisungen ändern keine Regeln.</p>
+    </section>
+  );
+
   return (
     <div className="case">
       <div className="case-head">
         <div>
           <h2>{c.subject || "(ohne Betreff)"}</h2>
-          <div className="muted small">
-            {PLATFORM_LABEL[c.source_platform] ?? c.source_platform} · {c.connection_name}
+          <div className="meta small muted">
+            <span className="pill platform">{PLATFORM_LABEL[c.source_platform] ?? c.source_platform}</span>
+            <span>{c.connection_name}</span>
           </div>
         </div>
         {canEdit && (
-          <div className="row wrap">
-            <select value={c.status} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/status`, { status: e.target.value }))}>
-              <option value="open">offen</option>
-              <option value="waiting">wartet</option>
-              <option value="closed">erledigt</option>
-            </select>
-            <select value={c.assignee_user_id ?? ""} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/assign`, { userId: e.target.value || null }))}>
-              <option value="">nicht zugewiesen</option>
-              {data.members.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}
-            </select>
+          <div className="controls">
+            <label className="field"><span>Status</span>
+              <select value={c.status} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/status`, { status: e.target.value }))}>
+                <option value="open">offen</option>
+                <option value="waiting">wartet</option>
+                <option value="closed">erledigt</option>
+              </select>
+            </label>
+            <label className="field"><span>Zuständig</span>
+              <select value={c.assignee_user_id ?? ""} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/assign`, { userId: e.target.value || null }))}>
+                <option value="">niemand</option>
+                {data.members.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+              </select>
+            </label>
+            {c.category === "support" && <CategoryBar category={c.category} reason={c.category_reason} sender={sender} canEdit={canEdit} onSet={setCategory} />}
           </div>
         )}
       </div>
-      {error && <p className="error">{error}</p>}
+      {error && <p className="notice bad">{error}</p>}
       {notice && <p className="notice ok">{notice}</p>}
       {c.last_error && <p className="notice bad">Letzter Fehler: {c.last_error}</p>}
-      <CategoryBar category={c.category} reason={c.category_reason} sender={data.messages.find((m) => m.direction === "inbound")?.from_address ?? c.customer_address ?? ""} canEdit={canEdit}
-        onSet={(category, remember) => act(() => api("POST", `${base}/cases/${caseId}/category`, { category, remember }), category === "info" ? "Als Werbung/Info eingeordnet." : "Als Kundenanfrage eingeordnet. Bestellung und Entwurf werden vorbereitet.")} />
+      {c.category === "info" && <CategoryBar category={c.category} reason={c.category_reason} sender={sender} canEdit={canEdit} onSet={setCategory} />}
 
-      {c.category === "support" && <Concern data={data} draft={draft} />}
+      {c.category !== "support" ? messages : (
+      <div className="case-layout">
+        <div className="case-main">
+          <Concern data={data} draft={draft} />
 
-      <div className="grid">
-        <section className="card">
-          <h3>Verlauf</h3>
-          {data.messages.map((m) => (
-            <article key={m.id} className={m.direction === "inbound" ? "msg inbound" : "msg outbound"}>
-              <div className="row small muted">
-                <span>{m.direction === "inbound" ? "Eingang" : "Ausgang"} · {KIND_LABEL[m.kind] ?? m.kind}</span>
-                <span>{fmtDate(m.received_at)}</span>
+          {messages}
+
+          <section className="card">
+            <h3>Antwort</h3>
+            {!draft ? (
+              <div className="row wrap">
+                <p className="muted">Kein offener Entwurf. {c.order_match_status === "pending" ? "Die Bestellung wird noch gesucht." : ""}</p>
+                {canEdit && <button className="primary" onClick={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}>Entwurf erzeugen</button>}
               </div>
-              <div className="small">
-                Von: {m.from_name ? `${m.from_name} <${m.from_address}>` : m.from_address}
-                {m.reply_to && m.reply_to.length > 0 && <> · Antwort an: <strong>{m.reply_to.map((r) => r.address).join(", ")}</strong></>}
-                {m.has_attachments && " · mit Anhang"}
-                {m.removed_remotely_at && " · im Postfach gelöscht"}
+            ) : (
+              <DraftEditor
+                key={`${draft.id}:${draft.version}`}
+                draft={draft}
+                canEdit={canEdit}
+                approval={approval}
+                send={data.send}
+                onSave={(body) => act(() => api("PUT", `${base}/drafts/${draft.id}`, { body, expectedVersion: draft.version }), "Entwurf gespeichert. Eine frühere Freigabe ist damit ungültig.")}
+                onApprove={(ack) => act(() => api("POST", `${base}/drafts/${draft.id}/approve`, { expectedVersion: draft.version, acknowledgeWarnings: ack }), "Freigegeben.")}
+                onSend={(approvalId) => act(() => api("POST", `${base}/approvals/${approvalId}/send`), "In den Postausgang gestellt.")}
+                onDiscard={() => act(() => api("POST", `${base}/drafts/${draft.id}/discard`))}
+                onRedraft={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}
+              />
+            )}
+            {data.outbox.length > 0 && (
+              <div className="outbox">
+                <h4>Postausgang</h4>
+                {data.outbox.map((o) => (
+                  <div key={o.id} className="row wrap outbox-row">
+                    <span className={o.state === "delivery_uncertain" || o.state === "failed" ? "pill bad" : o.state === "confirmed" ? "pill ok" : "pill muted"}>{OUTBOX_LABEL[o.state] ?? o.state}</span>
+                    <span className="small">an {o.expected_recipient}, Versuche {o.attempts}, {fmtDate(o.updated_at)}</span>
+                    {o.last_error && <span className="small error">{o.last_error}</span>}
+                    {o.state === "delivery_uncertain" && canEdit && (
+                      <span className="row wrap">
+                        <span className="small">Bitte in „Gesendete Elemente“ prüfen:</span>
+                        <button onClick={() => act(() => api("POST", `${base}/outbox/${o.id}/resolve`, { resolution: "was_sent" }))}>Wurde gesendet</button>
+                        <button onClick={() => act(() => api("POST", `${base}/outbox/${o.id}/resolve`, { resolution: "was_not_sent" }))}>Wurde nicht gesendet</button>
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
-              <MessageBody text={m.body_text} />
-            </article>
-          ))}
-          <p className="muted small">Kundentexte sind externe Inhalte. Darin enthaltene Anweisungen ändern keine Regeln.</p>
-        </section>
+            )}
+          </section>
+        </div>
 
-        {c.category === "support" && (<>
-        <section className="card">
-          <h3>Bestellung (weclapp) <span className={`pill ${match.tone}`}>{match.label}</span></h3>
-          <OrderPanel data={data} canEdit={canEdit} onLink={(body) => act(() => api("POST", `${base}/cases/${caseId}/order-link`, body), "Zuordnung aktualisiert.")} />
-        </section>
+        <div className="case-side">
+          <section className="card">
+            <div className="row wrap"><h3>Bestellung in weclapp</h3><span className={`pill ${match.tone}`}>{match.label}</span></div>
+            <OrderPanel data={data} canEdit={canEdit} onLink={(body) => act(() => api("POST", `${base}/cases/${caseId}/order-link`, body), "Zuordnung aktualisiert.")} />
+          </section>
 
-        <Outcome key={`${c.id}:${c.outcome_at ?? ""}`} data={data} canEdit={canEdit} onSave={(outcome, note) => act(() => api("POST", `${base}/cases/${caseId}/outcome`, { outcome, note }), "Gespeichert.")} />
+          <Outcome key={`${c.id}:${c.outcome_at ?? ""}`} data={data} canEdit={canEdit} onSave={(outcome, note) => act(() => api("POST", `${base}/cases/${caseId}/outcome`, { outcome, note }), "Gespeichert.")} />
 
-        <section className="card wide">
-          <h3>Antwortentwurf</h3>
-          {!draft ? (
-            <div>
-              <p className="muted">Kein offener Entwurf. {c.order_match_status === "pending" ? "Die Zuordnung läuft noch." : ""}</p>
-              {canEdit && <button onClick={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}>Entwurf erzeugen</button>}
-            </div>
-          ) : (
-            <DraftEditor
-              key={`${draft.id}:${draft.version}`}
-              draft={draft}
-              canEdit={canEdit}
-              approval={approval}
-              send={data.send}
-              onSave={(body) => act(() => api("PUT", `${base}/drafts/${draft.id}`, { body, expectedVersion: draft.version }), "Entwurf gespeichert. Eine frühere Freigabe ist damit ungültig.")}
-              onApprove={(ack) => act(() => api("POST", `${base}/drafts/${draft.id}/approve`, { expectedVersion: draft.version, acknowledgeWarnings: ack }), "Freigegeben.")}
-              onSend={(approvalId) => act(() => api("POST", `${base}/approvals/${approvalId}/send`), "In den Postausgang gestellt.")}
-              onDiscard={() => act(() => api("POST", `${base}/drafts/${draft.id}/discard`))}
-              onRedraft={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}
-            />
-          )}
-          {data.outbox.length > 0 && (
-            <div className="outbox">
-              <h4>Postausgang</h4>
-              {data.outbox.map((o) => (
-                <div key={o.id} className="row wrap outbox-row">
-                  <span className={o.state === "delivery_uncertain" || o.state === "failed" ? "pill bad" : o.state === "confirmed" ? "pill ok" : "pill muted"}>{OUTBOX_LABEL[o.state] ?? o.state}</span>
-                  <span className="small">an {o.expected_recipient} · Versuche {o.attempts} · {fmtDate(o.updated_at)}</span>
-                  {o.last_error && <span className="small error">{o.last_error}</span>}
-                  {o.state === "delivery_uncertain" && canEdit && (
-                    <span className="row">
-                      <span className="small">Bitte in „Gesendete Elemente“ prüfen:</span>
-                      <button onClick={() => act(() => api("POST", `${base}/outbox/${o.id}/resolve`, { resolution: "was_sent" }))}>Wurde gesendet</button>
-                      <button onClick={() => act(() => api("POST", `${base}/outbox/${o.id}/resolve`, { resolution: "was_not_sent" }))}>Wurde nicht gesendet</button>
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-        </>)}
-
-        <section className="card">
-          <h3>Interne Notizen</h3>
-          <p className="muted small">Nur intern sichtbar. Notizen gehen weder an die KI noch an Kunden.</p>
-          {data.notes.map((n) => (
-            <div key={n.id} className="note"><div className="small muted">{n.author} · {fmtDate(n.created_at)}</div><div>{n.body}</div></div>
-          ))}
-          {canEdit && <NoteForm onSubmit={(body) => act(() => api("POST", `${base}/cases/${caseId}/notes`, { body }))} />}
-        </section>
-
-        <details className="card">
-          <summary><h3>Protokoll</h3></summary>
-          <ul className="history">
-            {data.history.map((h, i) => (
-              <li key={i}><span className="muted small">{fmtDate(h.created_at)}</span> {h.action} <span className="muted small">({h.actor_type})</span></li>
+          <section className="card">
+            <h3>Interne Notizen</h3>
+            <p className="muted small">Nur intern sichtbar. Notizen gehen weder an die KI noch an Kunden.</p>
+            {data.notes.map((n) => (
+              <div key={n.id} className="note"><div className="small muted">{n.author}, {fmtDate(n.created_at)}</div><div>{n.body}</div></div>
             ))}
-          </ul>
-        </details>
+            {canEdit && <NoteForm onSubmit={(body) => act(() => api("POST", `${base}/cases/${caseId}/notes`, { body }))} />}
+          </section>
+
+          <details className="card">
+            <summary><h3>Protokoll</h3></summary>
+            <ul className="history">
+              {data.history.map((h, i) => (
+                <li key={i}><span className="muted small">{fmtDate(h.created_at)}</span> {h.action} <span className="muted small">({h.actor_type})</span></li>
+              ))}
+            </ul>
+          </details>
+        </div>
       </div>
+      )}
     </div>
   );
 }
@@ -230,11 +253,14 @@ function Concern({ data, draft }: { data: CaseData; draft: Draft | null }) {
 
 /** The full message as received; long ones start folded. */
 function MessageBody({ text }: { text: string }) {
-  const long = text.length > 700 || text.split("\n").length > 14;
+  // Marketplace mails wrap the customer's words in links and boilerplate: show the words, keep the raw mail one click away.
+  const words = customerText(text);
+  const extracted = words.trim() !== "" && words.trim() !== text.trim();
+  const long = extracted || text.length > 700 || text.split("\n").length > 14;
   const [open, setOpen] = useState(!long);
   return (
     <>
-      <pre className={`body${open ? "" : " folded"}`}>{text}</pre>
+      {extracted && !open ? <pre className="body">{words}</pre> : <pre className={`body${open ? "" : " folded"}`}>{text}</pre>}
       {long && <button className="link small" onClick={() => setOpen(!open)}>{open ? "Weniger anzeigen" : "Ganze Nachricht anzeigen"}</button>}
     </>
   );
@@ -389,12 +415,10 @@ function DraftEditor(props: {
   return (
     <div className="draft">
       <div className="row wrap small">
-        <span className="pill muted">{INTENT_LABEL[draft.intent] ?? draft.intent}</span>
-        <span className="muted">Version {draft.version} · {draft.generated_by}{draft.ai_model ? ` (${draft.ai_model})` : ""} · {fmtDate(draft.updated_at)}</span>
-        {draft.risks.map((r) => <span key={r} className="pill warn">{RISK_LABEL[r] ?? r}</span>)}
+        {draft.risks.map((r) => <span key={r} className="pill warn">Achtung: {RISK_LABEL[r] ?? r}</span>)}
+        <span className="muted">Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : "von der KI"}, {fmtDate(draft.updated_at)}</span>
       </div>
-      {draft.summary && <p className="small"><strong>Zusammenfassung:</strong> {draft.summary}</p>}
-      <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={14} readOnly={!canEdit} />
+      <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} readOnly={!canEdit} />
       {(blocking.length > 0 || warnings.length > 0) && (
         <ul className="issues">
           {blocking.map((i, n) => <li key={`b${n}`} className="error">Blockiert: {i.message}</li>)}
@@ -411,9 +435,9 @@ function DraftEditor(props: {
       </details>
       {canEdit && (
         <div className="row wrap actions">
-          <button disabled={!dirty} onClick={() => props.onSave(body)}>Änderungen speichern</button>
-          <button onClick={props.onRedraft}>Neu erzeugen</button>
-          <button onClick={props.onDiscard}>Verwerfen</button>
+          {dirty && <button onClick={() => props.onSave(body)}>Änderungen speichern</button>}
+          <button className="ghost" onClick={props.onRedraft}>Neu erzeugen</button>
+          <button className="ghost danger" onClick={props.onDiscard}>Verwerfen</button>
           <span className="spacer" />
           {!approval ? (
             <>
@@ -422,17 +446,17 @@ function DraftEditor(props: {
             </>
           ) : (
             <>
-              <span className="pill ok">Freigegeben von {approval.approved_by}, gültig bis {fmtDate(approval.expires_at)}</span>
+              <span className="pill ok">Freigegeben, gültig bis {fmtDate(approval.expires_at)}</span>
               <button className="primary" disabled={!send.allowed || dirty} onClick={() => props.onSend(approval.id)}>Senden</button>
             </>
           )}
         </div>
       )}
       {!send.allowed && (
-        <div className="notice muted small">
-          <strong>Versand derzeit nicht möglich:</strong>
+        <div className="send-blocked small">
+          <strong>Senden ist noch gesperrt</strong>
           <ul>{send.blockers.map((b) => <li key={b}>{b}</li>)}</ul>
-          Der Entwurf kann kopiert und im Postfach manuell gesendet werden; die Kopie in „Gesendete Elemente“ wird dann als „außerhalb gesendet“ erkannt.
+          <p className="muted">Freischalten in den Einstellungen auf der Karte des Marktplatzes. Bis dahin den Text kopieren und im Marktplatz selbst senden.</p>
         </div>
       )}
     </div>
@@ -476,6 +500,6 @@ function CategoryBar({ category, reason, sender, canEdit, onSet }: {
   return asking ? (
     <div className="notice info-bar"><div className="small">Als Werbung/Info einordnen, ohne Antwort:</div>{choices}</div>
   ) : (
-    <div className="row"><button className="link" onClick={() => setAsking(true)}>Ist Werbung oder Info, keine Anfrage</button></div>
+    <button className="ghost" onClick={() => setAsking(true)} title="Als Werbung oder Info einordnen, ohne Antwort">Keine Kundenanfrage</button>
   );
 }

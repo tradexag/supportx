@@ -64,6 +64,26 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
     many(ctx.db, "SELECT u.id, u.display_name FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = $1 AND m.role IN ('owner','agent') ORDER BY u.display_name", [ws]),
   ]);
   const send = await sendBlockers(ctx, ctx.db, ws, conversationId);
+  // Earlier and parallel cases of the same customer or the same order, so the
+  // history reads as one conversation even when the mailbox split it into threads.
+  const c = conversation as { customer_address: string | null; order_references: unknown };
+  const related = await many(
+    ctx.db,
+    `SELECT m.id, m.direction, m.kind, m.from_address, m.from_name, m.subject, m.body_text, m.has_attachments, m.received_at, m.removed_remotely_at,
+            o.id AS conversation_id, o.subject AS conversation_subject
+       FROM conversations o
+       JOIN messages m ON m.workspace_id = o.workspace_id AND m.conversation_id = o.id
+      WHERE o.workspace_id = $1 AND o.id <> $2 AND o.category = 'support'
+        AND (
+          ($3::text IS NOT NULL AND o.customer_address = $3)
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(o.order_references) mine(ref) WHERE mine.ref->>'value' IN (SELECT r->>'value' FROM jsonb_array_elements($4::jsonb) r))
+          OR EXISTS (SELECT 1 FROM order_links a JOIN order_links b ON b.workspace_id = a.workspace_id AND b.external_order_id = a.external_order_id AND b.is_current
+                      WHERE a.workspace_id = $1 AND a.conversation_id = o.id AND a.is_current AND a.external_order_id IS NOT NULL AND b.conversation_id = $2)
+        )
+      ORDER BY m.received_at DESC
+      LIMIT 50`,
+    [ws, conversationId, c.customer_address, JSON.stringify(Array.isArray(c.order_references) ? c.order_references : [])],
+  );
   // Addresses for links to the order (weclapp tenant, Mirakl back office); no credentials.
   const linkTargets = await one<{ erp_base_url: string | null; mirakl_base_url: string | null }>(
     ctx.db,
@@ -71,7 +91,7 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
             (SELECT config->>'baseUrl' FROM channel_connections WHERE workspace_id = $1 AND kind = 'mirakl_inbox' ORDER BY created_at LIMIT 1) AS mirakl_base_url`,
     [ws],
   );
-  return { conversation, messages, notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets };
+  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets };
 }
 
 /** Counts for the inbox tabs. */
