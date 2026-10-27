@@ -573,6 +573,32 @@ export async function setSendEnabled(ctx: AppContext, actor: Actor, connectionId
   });
 }
 
+/**
+ * One click per marketplace: allow or stop replies for this platform over this
+ * connection. Allowing records the owner's click as the reply-route check and
+ * turns sending on for the connection; every single reply still needs its own
+ * approval in the case. Stopping revokes the route (and, for a marketplace API
+ * connection that serves only this platform, turns sending off).
+ */
+export async function setPlatformSending(ctx: AppContext, actor: Actor, connectionId: string, sourcePlatform: string, enabled: boolean): Promise<void> {
+  requireRole(actor, ["owner"]);
+  await withTx(ctx.db, async (tx) => {
+    const row = await loadChannelConnection(tx, actor.workspaceId, connectionId);
+    const platform = assertPlatform(sourcePlatform);
+    await tx.query("UPDATE reply_route_verifications SET revoked_at = now() WHERE workspace_id = $1 AND connection_id = $2 AND source_platform = $3 AND revoked_at IS NULL", [actor.workspaceId, connectionId, platform]);
+    if (enabled) {
+      await tx.query(
+        "INSERT INTO reply_route_verifications (workspace_id, connection_id, source_platform, verified_by, evidence_note) VALUES ($1, $2, $3, $4, $5)",
+        [actor.workspaceId, connectionId, platform, actor.type === "user" ? actor.userId : null, "Versand per Klick auf der Marktplatz-Karte freigeschaltet. Die erste Antwort im Marktplatz kontrollieren."],
+      );
+      await tx.query("UPDATE channel_connections SET send_enabled = true WHERE workspace_id = $1 AND id = $2", [actor.workspaceId, connectionId]);
+    } else if (row.kind !== "microsoft_graph") {
+      await tx.query("UPDATE channel_connections SET send_enabled = false WHERE workspace_id = $1 AND id = $2", [actor.workspaceId, connectionId]);
+    }
+    await audit(tx, actor, enabled ? "sending.platform_enabled" : "sending.platform_disabled", "channel_connection", connectionId, { sourcePlatform: platform });
+  });
+}
+
 function checkedClientSecret(raw: string): string {
   const secret = raw.trim();
   if (!secret) throw new ServiceError(400, "INVALID", "clientSecret fehlt.");

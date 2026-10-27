@@ -29,10 +29,12 @@ export interface ChannelSetup {
   steps: SetupStep[];
   /** First open step. */
   next: SetupStep | null;
+  /** Replies for this marketplace: which connection sends them and whether that is allowed. Null until connected. */
+  sending?: { connectionId: string; on: boolean } | null;
 }
 
 export interface SetupInput {
-  connections: ReadonlyArray<{ id: string; kind: string; health: string; paused: boolean; last_error: string | null; default_source_platform: string; config: { sellerUsername?: string; mailbox?: string } }>;
+  connections: ReadonlyArray<{ id: string; kind: string; health: string; paused: boolean; last_error: string | null; default_source_platform: string; send_enabled?: boolean; config: { sellerUsername?: string; mailbox?: string } }>;
   accounts: ReadonlyArray<{ platform: string; paused: boolean }>;
   rules: ReadonlyArray<{ connection_id: string; source_platform: string }>;
   routes: ReadonlyArray<{ connection_id: string; source_platform: string }>;
@@ -95,7 +97,7 @@ export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
     // Without a connection, "test" and "log in" have nothing to act on.
     if (own.length === 0) for (const step of steps) if (step.action !== "connect") delete step.action;
     const err = own.find((c) => c.health === "error" && !c.paused)?.last_error ?? null;
-    return finish(market, LABEL[market], WAY[market], steps, own.some(healthy), err);
+    return { ...finish(market, LABEL[market], WAY[market], steps, own.some(healthy), err), sending: sendingOf(market, own.find(healthy), input) };
   }
   const graph = input.connections.filter((c) => c.kind === "microsoft_graph");
   const mailboxOk = graph.some(healthy);
@@ -107,7 +109,14 @@ export function marketSetup(market: Market, input: SetupInput): ChannelSetup {
     external,
     { key: "mailbox", title: "Microsoft-Postfach verbunden und geprüft", hint: "Siehe Karte „Microsoft-Postfach“.", done: mailboxOk },
   ];
-  return finish(market, LABEL[market], WAY[market], steps, !!confirmed && mailboxOk, null);
+  const connected = !!confirmed && mailboxOk;
+  return { ...finish(market, LABEL[market], WAY[market], steps, connected, null), sending: connected ? sendingOf(market, graph.find(healthy), input) : null };
+}
+
+function sendingOf(market: Market, connection: SetupInput["connections"][number] | undefined, input: SetupInput): ChannelSetup["sending"] {
+  if (!connection) return null;
+  const routed = input.routes.some((r) => r.connection_id === connection.id && r.source_platform === market);
+  return { connectionId: connection.id, on: routed && !!connection.send_enabled };
 }
 
 function fmtDay(iso: string): string {

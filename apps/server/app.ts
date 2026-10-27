@@ -24,6 +24,7 @@ import {
   revokeReplyRoute,
   setConnectionPaused, replaceConnectionSecret, deleteConnection,
   setMiraklBackgroundSync,
+  setPlatformSending,
   setSendEnabled,
   startEbayConsent,
   upsertWeclappConnection,
@@ -294,6 +295,11 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   });
   app.post("/api/w/:ws/connections/:id/send-enabled", async (req) => {
     await setSendEnabled(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ enabled: z.boolean() }), req.body).enabled);
+    return { ok: true };
+  });
+  app.post("/api/w/:ws/connections/:id/platform-sending", async (req) => {
+    const body = parse(z.object({ sourcePlatform: z.string(), enabled: z.boolean() }), req.body);
+    await setPlatformSending(ctx, await actor(req), (req.params as { id: string }).id, body.sourcePlatform, body.enabled);
     return { ok: true };
   });
   app.post("/api/w/:ws/connections/:id/secret", async (req) => {

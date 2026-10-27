@@ -70,9 +70,14 @@ label.row { flex-direction: row; align-items: center; }
 .msg { border-left: 3px solid var(--line); padding: 6px 10px; margin-bottom: 10px; }
 .msg.inbound { border-color: var(--text); } .msg.outbound { border-color: var(--ok); }
 .msg .row { justify-content: space-between; }
-pre.body { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
+pre.body { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: inherit; margin: 6px 0 0; }
+pre.body.folded { max-height: 15em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); mask-image: linear-gradient(#000 75%, transparent); }
+.concern { margin-bottom: 12px; }
+.concern h3 { margin: 0; }
+.concern blockquote { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
 .kv > span:first-child { color: var(--muted); }
+.kv > * { min-width: 0; overflow-wrap: anywhere; }
 .shipment { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; margin-bottom: 6px; }
 .order ul, .history { margin: 4px 0; padding-left: 18px; }
 .draft textarea { margin: 8px 0; font-family: inherit; line-height: 1.45; }
@@ -149,3 +154,5 @@ ol.steps li > button.link { flex: none; font-size: 12px; }
 .order-links { margin-bottom: 8px; }
 a.button { display: inline-block; padding: 6px 12px; border: 1px solid var(--text); color: var(--text); text-decoration: none; font-size: 13px; }
 a.button:hover { background: var(--text); color: var(--card); }
+
+.send-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--line); }

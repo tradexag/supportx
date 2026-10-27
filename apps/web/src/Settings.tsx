@@ -123,7 +123,14 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
           setPanel({ card: m, action: a });
         };
         return (
-          <SetupCard key={m} setup={marketSetup(m, { ...data, confirmations: data.workspace.setup_confirmations })} owner={owner} onAction={onAction} graphMailbox={kind ? undefined : graph?.config.mailbox}>
+          <SetupCard key={m} setup={marketSetup(m, { ...data, confirmations: data.workspace.setup_confirmations })} owner={owner} onAction={onAction} graphMailbox={kind ? undefined : graph?.config.mailbox}
+            serverSendOff={data.sendMode !== "enabled"}
+            onSending={(on) => {
+              const setup = marketSetup(m, { ...data, confirmations: data.workspace.setup_confirmations });
+              if (!setup.sending) return;
+              if (on && !window.confirm(`Antworten für ${PLATFORM_LABEL[m]} freischalten?\n\nJede Antwort geht erst raus, wenn du sie im Fall freigibst. Die erste Antwort bitte einmal im Marktplatz kontrollieren.`)) return;
+              void act(() => api("POST", `${base}/connections/${setup.sending!.connectionId}/platform-sending`, { sourcePlatform: m, enabled: on }), () => on ? `Versand für ${PLATFORM_LABEL[m]} freigeschaltet.` : `Versand für ${PLATFORM_LABEL[m]} gesperrt.`);
+            }}>
             {own.map((c) => connectionCard(c))}
             {owner && open("connect") && m === "ebay" && <EbayForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/ebay`, body), () => "eBay angelegt. Jetzt „Bei eBay anmelden“ klicken."); }} />}
             {owner && open("connect") && m === "kaufland" && <KauflandForm onCancel={closePanel} onSubmit={(body) => { closePanel(); void act(() => api("POST", `${base}/connections/kaufland`, body), () => "Kaufland verbunden. Bitte einmal „Verbindung testen“."); }} />}
@@ -193,8 +200,9 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
   );
 }
 
-function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
-  setup: ChannelSetup; owner: boolean; onAction: (a: StepAction) => void; graphMailbox?: string; children?: React.ReactNode;
+function SetupCard({ setup, owner, onAction, graphMailbox, onSending, serverSendOff, children }: {
+  setup: ChannelSetup; owner: boolean; onAction: (a: StepAction) => void; graphMailbox?: string;
+  onSending?: (on: boolean) => void; serverSendOff?: boolean; children?: React.ReactNode;
 }) {
   const doneCount = setup.steps.filter((s) => s.done).length;
   const countable = setup.steps.length;
@@ -230,6 +238,15 @@ function SetupCard({ setup, owner, onAction, graphMailbox, children }: {
           </li>
         ))}
       </ol>
+      {setup.sending && (
+        <div className="send-line">
+          <span>Antworten senden: <strong>{setup.sending.on ? "freigeschaltet" : "aus, nur Entwürfe"}</strong>
+            {setup.sending.on && serverSendOff && <span className="warn-text"> · auf dem Server noch gesperrt</span>}
+            {setup.sending.on && <span className="muted small"> · jede Antwort erst nach deiner Freigabe im Fall</span>}
+          </span>
+          {owner && onSending && <button className={setup.sending.on ? "" : "primary"} onClick={() => onSending(!setup.sending!.on)}>{setup.sending.on ? "Versand sperren" : "Versand freischalten"}</button>}
+        </div>
+      )}
       {children}
     </section>
   );
@@ -267,7 +284,7 @@ function ConnectionCard({ c, owner, duplicate, base, act, checkResult }: {
       <div className="conn-head">
         <div>
           <div className="row wrap"><strong className="conn-name">{c.display_name}</strong><span className="pill muted">{KIND_LABEL[c.kind] ?? c.kind}</span><span className={status.cls}>{status.label}</span></div>
-          <div className="muted small"><code>{ident}</code> · Letzter Abruf: {c.last_sync_at ? fmtDate(c.last_sync_at) : "noch nie"} · {c.send_enabled ? "Versand freigeschaltet" : "nur Entwürfe"}</div>
+          <div className="muted small"><code>{ident}</code> · Letzter Abruf: {c.last_sync_at ? fmtDate(c.last_sync_at) : "noch nie"}</div>
         </div>
         {owner && (
           <div className="row wrap">

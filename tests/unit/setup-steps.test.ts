@@ -71,3 +71,16 @@ test("steps that need a connection offer no button until it exists", () => {
   const k = marketSetup("kaufland", empty);
   assert.equal(k.steps.find((s) => s.key === "check")!.action, undefined);
 });
+
+test("sending: offered once connected, on only with the platform's route and sending enabled on that connection", () => {
+  assert.equal(marketSetup("kaufland", empty).sending, null);
+  const k = conn("k1", "kaufland_tickets", { send_enabled: true });
+  assert.deepEqual(marketSetup("kaufland", { ...empty, connections: [k] }).sending, { connectionId: "k1", on: false });
+  assert.deepEqual(marketSetup("kaufland", { ...empty, connections: [k], routes: [{ connection_id: "k1", source_platform: "kaufland" }] }).sending, { connectionId: "k1", on: true });
+  const g = conn("g1", "microsoft_graph", { send_enabled: true });
+  const ticked = { amazon: { at: "2026-10-27T09:00:00Z", by: null } };
+  const routes = [{ connection_id: "g1", source_platform: "amazon" }];
+  assert.equal(marketSetup("amazon", { ...empty, connections: [g], routes }).sending, null, "not before the marketplace step is ticked off");
+  assert.deepEqual(marketSetup("amazon", { ...empty, connections: [g], routes, confirmations: ticked }).sending, { connectionId: "g1", on: true });
+  assert.equal(marketSetup("docmorris", { ...empty, connections: [g], routes, confirmations: { docmorris: ticked.amazon } }).sending!.on, false, "the Amazon route does not open DocMorris");
+});

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { orderLinks, type OrderLink } from "./order-links.ts";
 import { api, fmtDate, MATCH_LABEL, OUTBOX_LABEL, PLATFORM_LABEL } from "./api.ts";
 import { INTENT_LABEL } from "./Inbox.tsx";
+import { customerText, shortText } from "./customer-text.ts";
 
 type Role = "owner" | "agent" | "viewer";
 type Rec = Record<string, unknown>;
@@ -90,7 +91,7 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
         <div>
           <h2>{c.subject || "(ohne Betreff)"}</h2>
           <div className="muted small">
-            {PLATFORM_LABEL[c.source_platform] ?? c.source_platform} · {c.connection_name} · Verkäuferkonto: {c.merchant_account_name ?? "nicht zugeordnet"}
+            {PLATFORM_LABEL[c.source_platform] ?? c.source_platform} · {c.connection_name}
           </div>
         </div>
         {canEdit && (
@@ -113,6 +114,8 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
       <CategoryBar category={c.category} reason={c.category_reason} sender={data.messages.find((m) => m.direction === "inbound")?.from_address ?? c.customer_address ?? ""} canEdit={canEdit}
         onSet={(category, remember) => act(() => api("POST", `${base}/cases/${caseId}/category`, { category, remember }), category === "info" ? "Als Werbung/Info eingeordnet." : "Als Kundenanfrage eingeordnet. Bestellung und Entwurf werden vorbereitet.")} />
 
+      {c.category === "support" && <Concern data={data} draft={draft} />}
+
       <div className="grid">
         <section className="card">
           <h3>Verlauf</h3>
@@ -128,7 +131,7 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 {m.has_attachments && " · mit Anhang"}
                 {m.removed_remotely_at && " · im Postfach gelöscht"}
               </div>
-              <pre className="body">{m.body_text}</pre>
+              <MessageBody text={m.body_text} />
             </article>
           ))}
           <p className="muted small">Kundentexte sind externe Inhalte. Darin enthaltene Anweisungen ändern keine Regeln.</p>
@@ -205,14 +208,44 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
   );
 }
 
+/** What the customer wants, on top: topic, the AI's one-line summary if there is one, and the customer's own words. */
+function Concern({ data, draft }: { data: CaseData; draft: Draft | null }) {
+  const inbound = [...data.messages].reverse().find((m) => m.direction === "inbound");
+  if (!inbound) return null;
+  const words = customerText(inbound.body_text);
+  const aiSummary = draft && draft.generated_by !== "rules" && draft.summary ? draft.summary : null;
+  return (
+    <section className="card concern">
+      <div className="row wrap">
+        <h3>Anliegen</h3>
+        {draft?.intent && <span className="pill muted">{INTENT_LABEL[draft.intent] ?? draft.intent}</span>}
+      </div>
+      {aiSummary && <p>{aiSummary}</p>}
+      {words && <blockquote>{shortText(words, 600)}</blockquote>}
+    </section>
+  );
+}
+
+/** The full message as received; long ones start folded. */
+function MessageBody({ text }: { text: string }) {
+  const long = text.length > 700 || text.split("\n").length > 14;
+  const [open, setOpen] = useState(!long);
+  return (
+    <>
+      <pre className={`body${open ? "" : " folded"}`}>{text}</pre>
+      {long && <button className="link small" onClick={() => setOpen(!open)}>{open ? "Weniger anzeigen" : "Ganze Nachricht anzeigen"}</button>}
+    </>
+  );
+}
+
 function OrderPanel({ data, canEdit, onLink }: { data: CaseData; canEdit: boolean; onLink: (body: { reference?: string; candidateId?: string }) => void }) {
   const [reference, setReference] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const link = data.orderLink;
   const order = link?.snapshot ?? null;
   const c = data.conversation;
   return (
     <div>
-      {c.merchant_account_name && <p className="small muted">Verkäuferkonto: {c.merchant_account_name}</p>}
       {link && (
         <p className="small muted">
           Gesucht: {link.references_tried.length ? link.references_tried.join(", ") : "keine Referenz erkannt"}
@@ -243,7 +276,10 @@ function OrderPanel({ data, canEdit, onLink }: { data: CaseData; canEdit: boolea
           })}
         />
       )}
-      {canEdit && (
+      {canEdit && link?.status === "unique" && !searchOpen && (
+        <button className="link small" onClick={() => setSearchOpen(true)}>Andere Bestellung zuordnen</button>
+      )}
+      {canEdit && (link?.status !== "unique" || searchOpen) && (
         <form className="row" onSubmit={(e) => { e.preventDefault(); if (reference.trim()) onLink({ reference: reference.trim() }); }}>
           <input placeholder="Bestell-, Rechnungs- oder Sendungsnummer suchen" value={reference} onChange={(e) => setReference(e.target.value)} />
           <button type="submit">Suchen &amp; zuordnen</button>
