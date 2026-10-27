@@ -1,4 +1,5 @@
 import { CONNECTOR_CATALOG } from "../connectors/catalog.ts";
+import { customerText } from "../core/customer-text.ts";
 import { many, one, withTx } from "../storage/db.ts";
 import { audit } from "./audit.ts";
 import { enqueue } from "./jobs.ts";
@@ -155,6 +156,57 @@ export async function setStatus(ctx: AppContext, actor: Actor, conversationId: s
     if (res.rowCount === 0) throw new ServiceError(404, "NOT_FOUND", "Fall nicht gefunden.");
     await audit(tx, actor, "conversation.status", "conversation", conversationId, { status });
   });
+}
+
+export const OUTCOMES = ["none", "replacement", "refund", "partial_refund", "return", "question", "other"] as const;
+
+/** Records what was done for the customer (or clears it with null). */
+export async function setOutcome(ctx: AppContext, actor: Actor, conversationId: string, input: { outcome: string | null; note?: string }): Promise<void> {
+  requireRole(actor, ["owner", "agent"]);
+  assertId(conversationId);
+  if (input.outcome !== null && !(OUTCOMES as readonly string[]).includes(input.outcome)) throw new ServiceError(400, "INVALID", "Ungültige Maßnahme.");
+  const note = input.note?.trim().slice(0, 2000) || null;
+  await withTx(ctx.db, async (tx) => {
+    const res = await tx.query(
+      "UPDATE conversations SET outcome = $3, outcome_note = $4, outcome_at = CASE WHEN $3::text IS NULL THEN NULL ELSE now() END, outcome_by = $5, updated_at = now() WHERE workspace_id = $1 AND id = $2",
+      [actor.workspaceId, conversationId, input.outcome, input.outcome === null ? null : note, input.outcome !== null && actor.type === "user" ? actor.userId : null],
+    );
+    if (res.rowCount === 0) throw new ServiceError(404, "NOT_FOUND", "Fall nicht gefunden.");
+    await audit(tx, actor, "conversation.outcome", "conversation", conversationId, { outcome: input.outcome });
+  });
+}
+
+const csvCell = (v: unknown): string => {
+  const s = v === null || v === undefined ? "" : v instanceof Date ? v.toISOString() : String(v);
+  // Leading = + - @ would run as a formula in Excel.
+  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return /[";\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+};
+
+/**
+ * All customer cases with what the customer wrote, what was answered and what
+ * was done, as CSV (semicolon, UTF-8 with BOM for Excel). Owners only.
+ */
+export async function exportCasesCsv(ctx: AppContext, actor: Actor): Promise<string> {
+  requireRole(actor, ["owner"]);
+  const rows = await many<Record<string, unknown>>(
+    ctx.db,
+    `SELECT c.id, c.created_at, c.source_platform, c.status, c.subject,
+            (SELECT d.intent FROM drafts d WHERE d.workspace_id = c.workspace_id AND d.conversation_id = c.id ORDER BY d.created_at DESC LIMIT 1) AS intent,
+            ol.snapshot->>'orderNumber' AS order_number, ol.snapshot->>'orderNumberAtCustomer' AS marketplace_order,
+            (SELECT m.body_text FROM messages m WHERE m.workspace_id = c.workspace_id AND m.conversation_id = c.id AND m.direction = 'inbound' ORDER BY m.received_at ASC LIMIT 1) AS customer_body,
+            (SELECT o.body FROM outbox o WHERE o.workspace_id = c.workspace_id AND o.conversation_id = c.id AND o.state IN ('provider_accepted','confirmed') ORDER BY o.created_at DESC LIMIT 1) AS reply,
+            c.outcome, c.outcome_note, c.outcome_at
+       FROM conversations c
+       LEFT JOIN order_links ol ON ol.workspace_id = c.workspace_id AND ol.conversation_id = c.id AND ol.is_current
+      WHERE c.workspace_id = $1 AND c.category = 'support'
+      ORDER BY c.created_at DESC`,
+    [actor.workspaceId],
+  );
+  const head = ["Fall", "Eingang", "Marktplatz", "Status", "Betreff", "Anliegen", "Auftrag weclapp", "Bestellung Marktplatz", "Kundentext", "Gesendete Antwort", "Maßnahme", "Notiz", "Maßnahme am"];
+  const lines = rows.map((r) => [r.id, r.created_at, r.source_platform, r.status, r.subject, r.intent, r.order_number, r.marketplace_order, customerText(String(r.customer_body ?? "")).slice(0, 2000), r.reply, r.outcome, r.outcome_note, r.outcome_at].map(csvCell).join(";"));
+  await audit(ctx.db, actor, "cases.exported", "workspace", actor.workspaceId, { rows: rows.length });
+  return `\uFEFF${[head.join(";"), ...lines].join("\r\n")}\r\n`;
 }
 
 export async function assign(ctx: AppContext, actor: Actor, conversationId: string, userId: string | null): Promise<void> {

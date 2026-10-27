@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { orderLinks, type OrderLink } from "./order-links.ts";
 import { api, fmtDate, MATCH_LABEL, OUTBOX_LABEL, PLATFORM_LABEL } from "./api.ts";
 import { INTENT_LABEL } from "./Inbox.tsx";
-import { customerText, shortText } from "./customer-text.ts";
+import { customerText, shortText } from "../../../packages/core/customer-text.ts";
 
 type Role = "owner" | "agent" | "viewer";
 type Rec = Record<string, unknown>;
@@ -28,7 +28,7 @@ interface OrderSnapshot {
 }
 interface CaseData {
   linkTargets?: { erp_base_url: string | null; mirakl_base_url: string | null } | null;
-  conversation: Rec & { id: string; subject: string; status: string; category: "support" | "info"; category_reason: string | null; customer_address: string | null; source_platform: string; order_match_status: string; merchant_account_id: string | null; merchant_account_name: string | null; connection_name: string; assignee_user_id: string | null; last_error: string | null; order_references: string[] };
+  conversation: Rec & { outcome: string | null; outcome_note: string | null; outcome_at: string | null; id: string; subject: string; status: string; category: "support" | "info"; category_reason: string | null; customer_address: string | null; source_platform: string; order_match_status: string; merchant_account_id: string | null; merchant_account_name: string | null; connection_name: string; assignee_user_id: string | null; last_error: string | null; order_references: string[] };
   messages: Array<{ id: string; direction: string; kind: string; from_address: string; from_name: string | null; reply_to: Array<{ address: string; name?: string }> | null; subject: string; body_text: string; received_at: string; has_attachments: boolean; removed_remotely_at: string | null }>;
   notes: Array<{ id: string; body: string; created_at: string; author: string }>;
   orderLink: null | { status: string; references_tried: string[]; candidates: Array<{ id: string; orderNumber?: string; matchedBy: string }>; external_order_id: string | null; matched_by: string | null; linked_by: string; error: string | null; snapshot: OrderSnapshot | null; retrieved_at: string | null };
@@ -143,6 +143,8 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
           <OrderPanel data={data} canEdit={canEdit} onLink={(body) => act(() => api("POST", `${base}/cases/${caseId}/order-link`, body), "Zuordnung aktualisiert.")} />
         </section>
 
+        <Outcome key={`${c.id}:${c.outcome_at ?? ""}`} data={data} canEdit={canEdit} onSave={(outcome, note) => act(() => api("POST", `${base}/cases/${caseId}/outcome`, { outcome, note }), "Gespeichert.")} />
+
         <section className="card wide">
           <h3>Antwortentwurf</h3>
           {!draft ? (
@@ -235,6 +237,43 @@ function MessageBody({ text }: { text: string }) {
       <pre className={`body${open ? "" : " folded"}`}>{text}</pre>
       {long && <button className="link small" onClick={() => setOpen(!open)}>{open ? "Weniger anzeigen" : "Ganze Nachricht anzeigen"}</button>}
     </>
+  );
+}
+
+export const OUTCOME_LABEL: Record<string, string> = {
+  none: "Nichts weiter nötig",
+  replacement: "Ersatz geschickt",
+  refund: "Erstattet",
+  partial_refund: "Teilweise erstattet",
+  return: "Rücksendung vereinbart",
+  question: "Rückfrage an den Kunden",
+  other: "Sonstiges",
+};
+
+/** What was answered and what was done afterwards: the base for later automation. */
+function Outcome({ data, canEdit, onSave }: { data: CaseData; canEdit: boolean; onSave: (outcome: string | null, note: string) => void }) {
+  const c = data.conversation;
+  const [note, setNote] = useState(c.outcome_note ?? "");
+  const sent = data.outbox.find((o) => o.state === "provider_accepted" || o.state === "confirmed");
+  const sentDraft = sent ? data.drafts.find((d) => d.status === "sent") : undefined;
+  return (
+    <section className="card">
+      <h3>Ergebnis</h3>
+      <div className="kv"><span>Antwort</span><span>{sent ? `über SupportX gesendet ${fmtDate(sent.dispatched_at ?? sent.created_at)}` : "noch nicht über SupportX gesendet"}</span></div>
+      {sentDraft && <pre className="body small">{sentDraft.body}</pre>}
+      <label className="stack small">Was wurde danach gemacht?
+        <select value={c.outcome ?? ""} disabled={!canEdit} onChange={(e) => onSave(e.target.value || null, note)}>
+          <option value="">noch offen</option>
+          {Object.entries(OUTCOME_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </label>
+      {c.outcome && (
+        <input placeholder="Notiz, z. B. Betrag, Artikel oder Antwort außerhalb von SupportX" value={note} disabled={!canEdit}
+          onChange={(e) => setNote(e.target.value)} onBlur={() => { if (note !== (c.outcome_note ?? "")) onSave(c.outcome, note); }}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} />
+      )}
+      {c.outcome_at && <p className="muted small">Erfasst {fmtDate(c.outcome_at)}</p>}
+    </section>
   );
 }
 

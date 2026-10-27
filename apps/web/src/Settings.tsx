@@ -140,6 +140,13 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
       })}
 
       <h2 className="settings-title">Weitere Einstellungen</h2>
+      {owner && (
+        <section className="card">
+          <h3>Auswertung</h3>
+          <p className="muted small">Alle Kundenanfragen mit Kundentext, gesendeter Antwort und Maßnahme als CSV, z. B. für Excel. Grundlage, um Antworten später weiter zu automatisieren.</p>
+          <a className="button" href={`${base}/export/cases.csv`} download>Fälle als CSV herunterladen</a>
+        </section>
+      )}
       <section className="card">
         <h3>Werbung erkennen</h3>
         <p className="muted">Newsletter, Aktionen und Partner-Infos erkennt SupportX selbst und legt sie unter „Werbung &amp; Infos“ ab, ohne Antwortentwurf. Liegt es einmal daneben, im Fall umschalten und dabei „Alle von …“ wählen. Das merkt sich SupportX hier.</p>

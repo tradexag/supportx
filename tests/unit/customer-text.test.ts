@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { customerText, shortText } from "../../apps/web/src/customer-text.ts";
+import { customerText, shortText } from "../../packages/core/customer-text.ts";
 
 const amazonMail = `[Amazon.com]<https://sellercentral.amazon.de/nms/redirect/0d3a?nt=X&sk=Y>
 

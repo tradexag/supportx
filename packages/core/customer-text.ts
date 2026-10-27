@@ -1,6 +1,6 @@
 /**
  * The customer's own words inside a marketplace message, without the
- * marketplace's frame (links, footer, legal text). Pure, for the case view.
+ * marketplace's frame (links, footer, legal text). Pure; used by the case view and the export.
  * Amazon's buyer-seller mails wrap the text in "Nachricht:" … "Nachricht anzeigen <…>"
  * (English: "Message:" … "View message"). Everything else is returned without
  * bare link blocks. Display only: the full message stays visible below.

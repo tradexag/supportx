@@ -9,7 +9,7 @@ import { z } from "zod";
 import { one } from "../../packages/storage/db.ts";
 import { DEFAULT_THEME, parseTheme, publicTheme, themeCss, type Theme } from "../../packages/core/theme.ts";
 import { actorFor, changePassword, login, logout, userForSession, workspacesFor } from "../../packages/services/auth.ts";
-import { addNote, assign, caseCounts, checkWorkspaceAiKey, deleteCategoryRule, getCase, getSettings, listCases, setCaseCategory, setStatus, setSetupConfirmation, setWorkspaceAiKey, updateWorkspaceSettings, type CaseFilter } from "../../packages/services/cases.ts";
+import { addNote, assign, caseCounts, checkWorkspaceAiKey, deleteCategoryRule, exportCasesCsv, getCase, getSettings, listCases, setCaseCategory, setOutcome, setStatus, setSetupConfirmation, setWorkspaceAiKey, updateWorkspaceSettings, type CaseFilter } from "../../packages/services/cases.ts";
 import {
   addRoutingRule,
   checkChannel,
@@ -142,6 +142,19 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.post("/api/w/:ws/cases/:id/status", async (req) => {
     await setStatus(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ status: z.string() }), req.body).status);
     return { ok: true };
+  });
+  app.post("/api/w/:ws/cases/:id/outcome", async (req) => {
+    const body = parse(z.object({ outcome: z.string().nullable(), note: z.string().max(2000).optional() }), req.body);
+    await setOutcome(ctx, await actor(req), (req.params as { id: string }).id, body);
+    return { ok: true };
+  });
+  app.get("/api/w/:ws/export/cases.csv", async (req, reply) => {
+    const csv = await exportCasesCsv(ctx, await actor(req));
+    return reply
+      .header("content-type", "text/csv; charset=utf-8")
+      .header("content-disposition", `attachment; filename="supportx-faelle-${new Date().toISOString().slice(0, 10)}.csv"`)
+      .header("cache-control", "no-store")
+      .send(csv);
   });
   app.post("/api/w/:ws/cases/:id/assign", async (req) => {
     await assign(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ userId: z.string().uuid().nullable() }), req.body).userId);
