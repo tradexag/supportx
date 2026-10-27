@@ -8,8 +8,10 @@ import { kauflandHeaders } from "./signing.ts";
  *
  * Documentation reviewed 2026-10-22 (docs/SOURCES.md, KFL-1..KFL-4):
  * - GET /tickets/messages (ts_created_from_iso, limit, offset): all ticket
- *   messages of the seller; GET /tickets/{id_ticket}?embedded=... for one ticket
- *   with buyer, order_units and messages.
+ *   messages of the seller; GET /tickets/{id_ticket}?embedded[0]=...&embedded[1]=...
+ *   for one ticket with buyer, order_units and messages. `embedded` must be an
+ *   indexed array: a comma list ("buyer,order_units") fails with HTTP 400
+ *   "Validation Failed" (live, 2026-10-27).
  * - POST /tickets/{id_ticket}/messages {text, interim_notice}. interim_notice=true
  *   keeps the ticket open for the seller; the text is still customer-visible.
  * - No ticket/message push notification is documented: bounded polling only.
@@ -40,6 +42,11 @@ interface TicketInfo {
   buyerEmail?: string;
   topic?: string;
   storefront?: string;
+}
+
+/** Kaufland date filter, without milliseconds: 2026-10-27T07:00:00Z. */
+function kauflandTime(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /** Seller-side authors; everything else (buyer, Kaufland service) is inbound. */
@@ -76,13 +83,14 @@ export class KauflandTicketsChannel implements MessageChannel {
     return (await requestJson(url, { method, headers, body: raw || undefined, timeoutMs: this.#config.timeoutMs ?? 20_000, fetchImpl: this.#config.fetchImpl })) as Json | null;
   }
 
-  async #ticket(id: string, embedded: string): Promise<Json> {
-    const res = await this.#call("GET", `/tickets/${encodeURIComponent(id)}`, { embedded });
+  async #ticket(id: string, embedded: ReadonlyArray<string>): Promise<Json> {
+    const query = Object.fromEntries(embedded.map((name, i) => [`embedded[${i}]`, name]));
+    const res = await this.#call("GET", `/tickets/${encodeURIComponent(id)}`, query);
     return ((res?.data ?? res) as Json) ?? {};
   }
 
   async #ticketInfo(id: string): Promise<TicketInfo> {
-    const ticket = await this.#ticket(id, "buyer,order_units");
+    const ticket = await this.#ticket(id, ["buyer", "order_units"]);
     const units = Array.isArray(ticket.order_units) ? (ticket.order_units as Json[]) : [];
     const idOrders = [...new Set(units.map((u) => u.id_order).filter((v): v is string | number => typeof v === "string" || typeof v === "number").map(String))];
     const buyer = (ticket.buyer ?? {}) as Json;
@@ -130,7 +138,7 @@ export class KauflandTicketsChannel implements MessageChannel {
     let offset = 0;
     let complete = false;
     for (let page = 0; page < (this.#config.maxPagesPerSync ?? 20); page++) {
-      const res = await this.#call("GET", "/tickets/messages", { ts_created_from_iso: since.toISOString(), limit: PAGE, offset });
+      const res = await this.#call("GET", "/tickets/messages", { ts_created_from_iso: kauflandTime(since), limit: PAGE, offset });
       const data = Array.isArray(res?.data) ? (res!.data as Json[]) : [];
       raws.push(...data);
       const total = Number((res?.pagination as Json | undefined)?.total ?? NaN);
@@ -177,7 +185,7 @@ export class KauflandTicketsChannel implements MessageChannel {
 
   async reconcileReply(_marker: string, since: Date, threadKey: string, sentBody: string): Promise<ReconcileOutcome> {
     try {
-      const ticket = await this.#ticket(threadId(threadKey, PREFIX), "messages");
+      const ticket = await this.#ticket(threadId(threadKey, PREFIX), ["messages"]);
       const from = since.getTime() - 5 * 60_000;
       for (const m of Array.isArray(ticket.messages) ? (ticket.messages as Json[]) : []) {
         if (!isSellerRole((m.author as Json | undefined)?.role)) continue;

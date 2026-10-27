@@ -73,8 +73,13 @@ export async function requestJson(url: URL | string, options: RequestOptions): P
   if (!response.ok) {
     let detail = "";
     try {
-      const parsed = JSON.parse(text) as { error?: { message?: string; code?: string } | string; message?: string };
+      const parsed = JSON.parse(text) as { error?: { message?: string; code?: string } | string; message?: string; errors?: unknown };
       detail = typeof parsed.error === "string" ? parsed.error : parsed.error?.message ?? parsed.message ?? "";
+      // Validation errors often list the offending fields separately (e.g. Kaufland: errors[]).
+      const fields = Array.isArray(parsed.errors)
+        ? parsed.errors.map((e) => (typeof e === "string" ? e : [e?.property ?? e?.field ?? e?.path, e?.message].filter((v) => typeof v === "string" && v).join(": "))).filter(Boolean).slice(0, 3)
+        : [];
+      if (fields.length) detail = [detail, fields.join("; ")].filter(Boolean).join(": ");
     } catch {
       detail = text.slice(0, 200);
     }

@@ -101,7 +101,9 @@ export async function startFakeKaufland(opts: { clientKey: string; secretKey: st
     const path = url.pathname.replace(/^\/v2/, "");
     if (req.method === "GET" && path === "/tickets") return json(res, 200, { data: tickets.slice(0, 1), pagination: { offset: 0, limit: 1, total: tickets.length } });
     if (req.method === "GET" && path === "/tickets/messages") {
-      const from = new Date(url.searchParams.get("ts_created_from_iso") ?? 0).getTime();
+      const fromParam = url.searchParams.get("ts_created_from_iso") ?? "1970-01-01T00:00:00Z";
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(fromParam)) return json(res, 400, { message: "Validation Failed", errors: [{ property: "ts_created_from_iso", message: "Invalid date format." }] });
+      const from = new Date(fromParam).getTime();
       const all = messages.filter((m) => new Date(m.ts_created_iso).getTime() >= from);
       const offset = Number(url.searchParams.get("offset") ?? 0);
       const limit = Number(url.searchParams.get("limit") ?? 30);
@@ -111,7 +113,9 @@ export async function startFakeKaufland(opts: { clientKey: string; secretKey: st
     if (req.method === "GET" && ticketMatch) {
       const t = tickets.find((x) => x.id_ticket === decodeURIComponent(ticketMatch[1]!));
       if (!t) return json(res, 404, { message: "not found" });
-      const embedded = (url.searchParams.get("embedded") ?? "").split(",");
+      // Like the real API: `embedded` only as an indexed array, a comma list is rejected.
+      if (url.searchParams.has("embedded")) return json(res, 400, { message: "Validation Failed", errors: [{ property: "embedded", message: "This value should be of type array." }] });
+      const embedded = [...url.searchParams.entries()].filter(([k]) => /^embedded\[\d+\]$/.test(k)).map(([, v]) => v);
       return json(res, 200, {
         data: {
           id_ticket: t.id_ticket, status: "opened", topic: t.topic, storefront: t.storefront, is_seller_responsible: true,

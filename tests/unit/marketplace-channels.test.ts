@@ -189,3 +189,15 @@ describe("text matching for marketplace echoes", () => {
     assert.ok(!sameText("A B", "A C"));
   });
 });
+
+describe("provider error text", () => {
+  it("names the fields of a validation error, not just 'Validation Failed'", async () => {
+    const { requestJson, HttpError } = await import("../../packages/connectors/http.ts");
+    const fetchImpl = (async () => new Response(JSON.stringify({ message: "Validation Failed", errors: [{ property: "embedded", message: "This value should be of type array." }] }), { status: 400 })) as typeof fetch;
+    await assert.rejects(requestJson(new URL("https://sellerapi.kaufland.com/v2/tickets/1"), { method: "GET", headers: {}, timeoutMs: 1000, fetchImpl }), (error: unknown) => {
+      assert.ok(error instanceof HttpError);
+      assert.match(error.message, /Validation Failed: embedded: This value should be of type array\./);
+      return true;
+    });
+  });
+});
