@@ -38,7 +38,7 @@ describe("ingestion and matching", () => {
     assert.equal(byKey["amazon-missing"]!.order_match_status, "missing");
     assert.equal(byKey["unknown-sender"]!.order_match_status, "no_reference");
     const drafts = await many(h.ctx.db, "SELECT 1 FROM drafts WHERE workspace_id = $1 AND status = 'proposed'", [s.workspaceId]);
-    assert.equal(drafts.length, 9, "the marketplace promotion gets no draft");
+    assert.equal(drafts.length, 8, "no draft for the promotion and our own Amazon copy; Lena's follow-up joins her first case");
     const promo = await one<{ category: string }>(h.ctx.db, "SELECT category FROM conversations WHERE workspace_id = $1 AND external_thread_key = 'conv-marketplace-promo'", [s.workspaceId]);
     assert.equal(promo!.category, "info");
   });
@@ -92,7 +92,7 @@ describe("ingestion and matching", () => {
     h.graph.expireDeltaTokens();
     await syncAndDrain(h, s);
     const count = await one<{ n: number }>(h.ctx.db, "SELECT count(*)::int AS n FROM messages WHERE workspace_id = $1", [s.workspaceId]);
-    assert.equal(count!.n, 10);
+    assert.equal(count!.n, 11);
   });
 
   it("stores a genuinely repeated customer message and supersedes the old draft", async () => {

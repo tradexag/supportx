@@ -50,6 +50,15 @@ function ruleHit(rule: CategoryRule, from: string): boolean {
 export const OWN_COPY = /hier ist eine kopie (der|deiner|ihrer) (e-?mail|nachricht),? die (du|sie) an .{1,80}? gesendet ha(st|ben)|here is a copy of the (e-?mail|message) you sent to/i;
 export const OWN_COPY_REASON = "Kopie einer eigenen Nachricht an den Käufer";
 
+/** Our own words inside Amazon's copy: the part between "Beginnmeldung" and "Endmeldung". */
+export function ownCopyText(body: string): string {
+  const start = /-{3,}\s*(beginnmeldung|begin message)\s*-{3,}/i.exec(body);
+  if (!start) return body.trim();
+  const rest = body.slice(start.index + start[0].length);
+  const end = /-{3,}\s*(endmeldung|end message)\s*-{3,}/i.exec(rest);
+  return (end ? rest.slice(0, end.index) : rest).trim();
+}
+
 export function categorizeMail(input: CategoryInput, rules: ReadonlyArray<CategoryRule> = []): CategoryDecision {
   const from = input.from.address.toLowerCase();
   // The operator's own sender rules always win; address rules before domain rules.

@@ -4,7 +4,7 @@ import { categorizeMail, type CategoryRule } from "../core/category.ts";
 import { extractOrderReferences, type OrderReference } from "../core/references.ts";
 import { sameText } from "../connectors/marketplace-common.ts";
 import { OUTBOX_HEADER } from "../connectors/microsoft/graph-mail.ts";
-import { many, one, withTx, type Queryable, type Tx } from "../storage/db.ts";
+import { many, one, withTx, type Db, type Queryable, type Tx } from "../storage/db.ts";
 import { audit } from "./audit.ts";
 import { channelFor, loadCategoryRules, loadChannelConnection, loadRoutingRules, type ChannelConnectionRow } from "./connections.ts";
 import type { AppContext } from "./context.ts";
@@ -21,6 +21,36 @@ interface ConversationRow {
 }
 
 const BOUNCE_SENDER = /^(mailer-daemon|postmaster)@/i;
+/** How long a case takes up a customer's follow-up mail about the same order. */
+const FOLLOW_UP_DAYS = 60;
+
+/** The case of a mail thread: its own, or the one a later thread was joined to. */
+async function conversationForThread(tx: Tx, ws: string, connectionId: string, threadKey: string): Promise<ConversationRow | null> {
+  return one<ConversationRow>(
+    tx,
+    `SELECT id, version, order_references, category, category_source FROM conversations
+      WHERE workspace_id = $1 AND id = coalesce(
+        (SELECT id FROM conversations WHERE workspace_id = $1 AND connection_id = $2 AND external_thread_key = $3),
+        (SELECT conversation_id FROM conversation_threads WHERE workspace_id = $1 AND connection_id = $2 AND external_thread_key = $3))
+      FOR UPDATE`,
+    [ws, connectionId, threadKey],
+  );
+}
+
+/** Most recent request of the same customer that names one of these order numbers. */
+async function followUpTarget(q: Queryable, ws: string, connectionId: string, customerAddress: string, orderNumbers: string[]): Promise<string | null> {
+  if (!customerAddress || orderNumbers.length === 0) return null;
+  const row = await one<{ id: string }>(
+    q,
+    `SELECT c.id FROM conversations c
+      WHERE c.workspace_id = $1 AND c.connection_id = $2 AND lower(c.customer_address) = lower($3) AND c.category = 'support'
+        AND c.last_message_at > now() - ($5::int * interval '1 day')
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(c.order_references) r WHERE r->>'value' = ANY($4::text[]))
+      ORDER BY c.last_message_at DESC LIMIT 1`,
+    [ws, connectionId, customerAddress, orderNumbers, FOLLOW_UP_DAYS],
+  );
+  return row?.id ?? null;
+}
 
 /**
  * Invalidate everything a person approved for this conversation. Called when a
@@ -80,14 +110,26 @@ export async function ingestMessage(tx: Tx, connection: ChannelConnectionRow, ru
     kind = "platform_notice";
   }
 
-  let conversation = await one<ConversationRow>(
-    tx,
-    "SELECT id, version, order_references, category, category_source FROM conversations WHERE workspace_id = $1 AND connection_id = $2 AND external_thread_key = $3 FOR UPDATE",
-    [ws, connection.id, message.externalThreadKey],
-  );
+  let conversation = await conversationForThread(tx, ws, connection.id, message.externalThreadKey);
   if (!conversation) {
     // Our own mail that does not belong to a known case is not a support case.
     if (message.direction === "outbound") return "ignored_unrelated_outbound";
+    const route = routeMessage(message, rules, {
+      sourcePlatform: connection.default_source_platform,
+      merchantAccountId: connection.default_merchant_account_id,
+    });
+    const customer = message.replyTo[0] ?? message.from;
+    // A follow-up from the same customer about the same order joins the case being worked on.
+    if (connection.kind === "microsoft_graph" && kind === "customer") {
+      const refs = extractOrderReferences(message.subject, newestEmailText(message.bodyText) + "\n" + message.bodyText, route.sourcePlatform as never);
+      const target = await followUpTarget(tx, ws, connection.id, customer.address, refs.map((r) => r.value));
+      if (target) {
+        await tx.query("INSERT INTO conversation_threads (workspace_id, connection_id, external_thread_key, conversation_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", [ws, connection.id, message.externalThreadKey, target]);
+        conversation = await conversationForThread(tx, ws, connection.id, message.externalThreadKey);
+      }
+    }
+  }
+  if (!conversation) {
     const route = routeMessage(message, rules, {
       sourcePlatform: connection.default_source_platform,
       merchantAccountId: connection.default_merchant_account_id,
@@ -255,4 +297,60 @@ export async function recategorizeAutoCases(db: Queryable): Promise<{ checked: n
     }
   }
   return { checked: rows.length, info };
+}
+
+/**
+ * Joins cases that a customer's follow-up mail split off before follow-ups were
+ * recognised: same mailbox, same customer, same order, the later case without any
+ * send. Its mails, notes and thread move to the earlier case; drafts of both go,
+ * because the earlier case now has a newer customer message.
+ */
+export async function mergeSplitFollowUps(db: Db): Promise<number> {
+  const pairs = await many<{ workspace_id: string; source: string; target: string }>(
+    db,
+    `SELECT DISTINCT ON (s.id) s.workspace_id, s.id AS source, t.id AS target
+       FROM conversations s
+       JOIN channel_connections cc ON cc.workspace_id = s.workspace_id AND cc.id = s.connection_id AND cc.kind = 'microsoft_graph'
+       JOIN conversations t ON t.workspace_id = s.workspace_id AND t.connection_id = s.connection_id AND t.id <> s.id
+        AND t.created_at < s.created_at AND t.category = 'support'
+        AND lower(t.customer_address) = lower(s.customer_address)
+        AND s.created_at - t.last_message_at < ($1::int * interval '1 day')
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(t.order_references) a, jsonb_array_elements(s.order_references) b WHERE a->>'value' = b->>'value')
+      WHERE s.category = 'support' AND s.customer_address IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.workspace_id = s.workspace_id AND o.conversation_id = s.id)
+      ORDER BY s.id, t.created_at DESC`,
+    [FOLLOW_UP_DAYS],
+  );
+  let merged = 0;
+  for (const p of pairs) {
+    await withTx(db, async (tx) => {
+      // Lock both; skip when the pair changed meanwhile (e.g. merged in an earlier round).
+      const rows = await many<{ id: string; external_thread_key: string; order_references: OrderReference[] }>(tx, "SELECT id, external_thread_key, order_references FROM conversations WHERE workspace_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE", [p.workspace_id, [p.source, p.target]]);
+      const source = rows.find((r) => r.id === p.source);
+      const target = rows.find((r) => r.id === p.target);
+      if (!source || !target) return;
+      if (await one(tx, "SELECT 1 FROM outbox WHERE workspace_id = $1 AND conversation_id = $2", [p.workspace_id, p.source])) return;
+      const ws = p.workspace_id;
+      await tx.query("UPDATE messages SET conversation_id = $3 WHERE workspace_id = $1 AND conversation_id = $2", [ws, p.source, p.target]);
+      await tx.query("UPDATE internal_notes SET conversation_id = $3 WHERE workspace_id = $1 AND conversation_id = $2", [ws, p.source, p.target]);
+      await tx.query("UPDATE conversation_threads SET conversation_id = $3 WHERE workspace_id = $1 AND conversation_id = $2", [ws, p.source, p.target]);
+      const conn = (await one<{ connection_id: string }>(tx, "SELECT connection_id FROM conversations WHERE workspace_id = $1 AND id = $2", [ws, p.source]))!;
+      await tx.query("DELETE FROM conversations WHERE workspace_id = $1 AND id = $2", [ws, p.source]);
+      await tx.query("INSERT INTO conversation_threads (workspace_id, connection_id, external_thread_key, conversation_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", [ws, conn.connection_id, source.external_thread_key, p.target]);
+      const refs = [...target.order_references];
+      for (const r of source.order_references) if (!refs.some((x) => x.value === r.value)) refs.push(r);
+      await tx.query(
+        `UPDATE conversations SET version = version + 1, status = 'open', order_references = $3, updated_at = now(),
+           latest_inbound_message_id = (SELECT id FROM messages WHERE workspace_id = $1 AND conversation_id = $2 AND direction = 'inbound' AND kind = 'customer' ORDER BY received_at DESC LIMIT 1),
+           last_message_at = (SELECT max(received_at) FROM messages WHERE workspace_id = $1 AND conversation_id = $2)
+         WHERE workspace_id = $1 AND id = $2`,
+        [ws, p.target, JSON.stringify(refs.slice(0, 10))],
+      );
+      await invalidateConversationApprovals(tx, ws, p.target, "Folgemail des Kunden zugeordnet");
+      await tx.query("UPDATE drafts SET status = 'superseded', updated_at = now() WHERE workspace_id = $1 AND conversation_id = $2 AND status IN ('proposed','edited')", [ws, p.target]);
+      await audit(tx, { type: "system", workspaceId: ws }, "conversation.follow_up_merged", "conversation", p.target, { from: p.source });
+      merged++;
+    });
+  }
+  return merged;
 }

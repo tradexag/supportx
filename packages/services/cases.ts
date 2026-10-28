@@ -6,6 +6,7 @@ import { enqueue } from "./jobs.ts";
 import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
 import { aiWriter, sendBlockers, titleHintsFor } from "./replies.ts";
 import { REPLY_FILES } from "./documents.ts";
+import { OWN_COPY_REASON, ownCopyText } from "../core/category.ts";
 import type { ChannelKind } from "./connections.ts";
 import type { OrderRecord } from "../core/contracts.ts";
 
@@ -73,10 +74,10 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
   const related = await many(
     ctx.db,
     `SELECT m.id, m.direction, m.kind, m.from_address, m.from_name, m.subject, m.body_text, m.has_attachments, m.received_at, m.removed_remotely_at,
-            o.id AS conversation_id, o.subject AS conversation_subject
+            o.id AS conversation_id, o.subject AS conversation_subject, (o.category_reason = $5) AS own_copy
        FROM conversations o
        JOIN messages m ON m.workspace_id = o.workspace_id AND m.conversation_id = o.id
-      WHERE o.workspace_id = $1 AND o.id <> $2 AND o.category = 'support'
+      WHERE o.workspace_id = $1 AND o.id <> $2 AND (o.category = 'support' OR o.category_reason = $5)
         AND (
           ($3::text IS NOT NULL AND o.customer_address = $3)
           OR EXISTS (SELECT 1 FROM jsonb_array_elements(o.order_references) mine(ref) WHERE mine.ref->>'value' IN (SELECT r->>'value' FROM jsonb_array_elements($4::jsonb) r))
@@ -85,8 +86,15 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
         )
       ORDER BY m.received_at DESC
       LIMIT 50`,
-    [ws, conversationId, c.customer_address, JSON.stringify(Array.isArray(c.order_references) ? c.order_references : [])],
+    [ws, conversationId, c.customer_address, JSON.stringify(Array.isArray(c.order_references) ? c.order_references : []), OWN_COPY_REASON],
   );
+  // Amazon's copies of what we wrote (also from Seller Central) show as our answer, with only our text.
+  for (const m of related as Array<{ own_copy: boolean; body_text: string; direction: string; kind: string }>) {
+    if (!m.own_copy) continue;
+    m.body_text = ownCopyText(m.body_text);
+    m.direction = "outbound";
+    m.kind = "own_copy";
+  }
   // Addresses for links to the order (weclapp tenant, Mirakl back office); no credentials.
   const linkTargets = await one<{ erp_base_url: string | null; mirakl_base_url: string | null }>(
     ctx.db,

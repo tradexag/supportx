@@ -145,7 +145,7 @@ export async function syncAndDrain(h: Harness, s: SeededWorkspace): Promise<void
 export async function caseByThread(h: Harness, s: SeededWorkspace, threadKey: string) {
   return (await one<{ id: string; version: number; order_match_status: string; latest_inbound_message_id: string; status: string; merchant_account_id: string | null }>(
     h.ctx.db,
-    "SELECT * FROM conversations WHERE workspace_id = $1 AND external_thread_key = $2",
+    "SELECT * FROM conversations WHERE workspace_id = $1 AND (external_thread_key = $2 OR id = (SELECT conversation_id FROM conversation_threads WHERE workspace_id = $1 AND external_thread_key = $2))",
     [s.workspaceId, threadKey],
   ))!;
 }

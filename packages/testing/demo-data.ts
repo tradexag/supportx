@@ -131,6 +131,11 @@ export function demoInboundMails(): DemoMail[] {
       body: "Hallo,\nich habe die Teekanne bestellt, aber noch nicht alles bekommen. Wo ist mein Paket? Das Teesieb fehlt noch.\n\nViele Grüße\nErika Beispiel", hoursAgo: 5,
     },
     {
+      key: "amazon-own-copy", from: "donotreply@amazon.demo.invalid", fromName: "Amazon (Demo)",
+      subject: "Deine E-Mail an Erika",
+      body: "[Amazon] Sehr geehrte(r) Demo-Händler,\n\nHier ist eine Kopie der E-Mail, die du an Erika gesendet hast.\n\nBestellnummer 302-1234567-7654321:\n\n------------- Beginnmeldung -------------\n\nGuten Tag Frau Beispiel,\ndas Teesieb ist unterwegs und kommt bis Donnerstag.\n\nViele Grüße\n\n------------- Endmeldung -------------", hoursAgo: 4.5,
+    },
+    {
       key: "docmorris-damaged", from: `service@${DEMO.docmorrisDomain}`, fromName: "DocMorris Marktplatz (Demo)", replyTo: `vorgang-778899@${DEMO.docmorrisDomain}`,
       subject: "Kundenanfrage zu Bestellnummer: DM-2026-000123",
       body: "Kundennachricht:\nDie Lieferung ist beschädigt angekommen, eine der beiden Cremes ist ausgelaufen. Bitte um Klärung.\n\nBestellnummer: DM-2026-000123", hoursAgo: 4,

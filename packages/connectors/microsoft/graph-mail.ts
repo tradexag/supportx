@@ -338,7 +338,8 @@ export class GraphMailChannel implements MessageChannel {
       for (const item of Array.isArray(page?.value) ? (page.value as Json[]) : []) {
         const headers = Array.isArray(item.internetMessageHeaders) ? (item.internetMessageHeaders as Array<{ name?: string; value?: string }>) : [];
         const hit = headers.some((h) => h.name?.toLowerCase() === OUTBOX_HEADER && h.value === marker);
-        if (hit && (item.conversationId === threadKey || !threadKey)) {
+        // The marker is unique per send; the reply can sit in a later thread joined to the case.
+        if (hit) {
           return { state: "found", externalMessageId: String(item.id), internetMessageId: typeof item.internetMessageId === "string" ? item.internetMessageId : undefined };
         }
       }

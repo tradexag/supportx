@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, afterEach, describe, it } from "node:test";
+import { getCase } from "../../packages/services/cases.ts";
 import { one } from "../../packages/storage/db.ts";
 import { caseByThread, closeDb, createHarness, seedWorkspace, syncAndDrain, type Harness } from "./harness.ts";
 
@@ -39,5 +40,21 @@ describe("Amazon copies of our own messages", () => {
     await h.ctx.db.query(readFileSync(new URL("../../packages/storage/migrations/012_own_copies.sql", import.meta.url), "utf8"));
     assert.equal((await one<{ category: string }>(h.ctx.db, "SELECT category FROM conversations WHERE id = $1", [auto.id]))!.category, "info");
     assert.equal((await one<{ category: string }>(h.ctx.db, "SELECT category FROM conversations WHERE id = $1", [person.id]))!.category, "support");
+  });
+});
+
+describe("our answers in the history", () => {
+  it("shows Amazon's copy of our reply in the case of the same order, with only our text", async () => {
+    h = await createHarness();
+    const s = await seedWorkspace(h);
+    h.graph.addInbound({ from: "kunde-x@marketplace.amazon.de", subject: "Falscher Artikel (Bestellung: 303-7978499-5468368)", body: "Ich habe die falsche Dose bekommen.", conversationId: "req-1" });
+    h.graph.addInbound({ from: "donotreply@amazon.com", subject: "Deine E-Mail an Sevinc", body: COPY.replace("Anbei das Retourenlabel.", "------------- Beginnmeldung -------------\n\nAnbei das Retourenlabel, wir senden Ersatz.\n\n------------- Endmeldung -------------"), conversationId: "copy-9" });
+    await syncAndDrain(h, s);
+    const req = await caseByThread(h, s, "req-1");
+    const view = await getCase(h.ctx, s.agent, req.id);
+    const ours = view.relatedMessages.find((m) => (m as { kind: string }).kind === "own_copy") as { body_text: string; direction: string } | undefined;
+    assert.ok(ours, "the copy shows up in the history");
+    assert.equal(ours.direction, "outbound");
+    assert.equal(ours.body_text, "Anbei das Retourenlabel, wir senden Ersatz.");
   });
 });

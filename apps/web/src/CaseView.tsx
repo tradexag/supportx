@@ -116,11 +116,11 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
       {timeline.map((m) => (
         <article key={m.id} className={`msg ${m.direction === "inbound" ? "inbound" : "outbound"}${m.from_case ? " related" : ""}`}>
           <div className="row small muted">
-            <span>{m.direction === "inbound" ? "Kunde" : "Antwort"}{m.kind !== "customer" && m.kind !== "echo" ? `, ${KIND_LABEL[m.kind] ?? m.kind}` : ""}{m.from_case ? `, aus Fall „${m.from_case}“` : ""}</span>
+            <span>{m.kind === "own_copy" ? "Unsere Antwort, laut Kopie von Amazon" : <>{m.direction === "inbound" ? "Kunde" : "Antwort"}{m.kind !== "customer" && m.kind !== "echo" ? `, ${KIND_LABEL[m.kind] ?? m.kind}` : ""}{m.from_case ? `, aus Fall „${m.from_case}“` : ""}</>}</span>
             <span>{fmtDate(m.received_at)}</span>
           </div>
           <div className="small muted">
-            Von: {m.from_name ? `${m.from_name} <${m.from_address}>` : m.from_address}
+            {m.kind !== "own_copy" && <>Von: {m.from_name ? `${m.from_name} <${m.from_address}>` : m.from_address}</>}
             {m.has_attachments && ", mit Anhang"}
             {m.removed_remotely_at && ", im Postfach gelöscht"}
           </div>
