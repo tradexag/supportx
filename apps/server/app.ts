@@ -36,6 +36,7 @@ import { handleEbayAccountDeletion } from "../../packages/services/ebay-account-
 import { ServiceError, type Actor, type AppContext } from "../../packages/services/context.ts";
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
+import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
 import { approveDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
 const SESSION_COOKIE = "supportx_session";
@@ -135,6 +136,19 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
     return { ok: true };
   });
   app.get("/api/w/:ws/cases/:id", async (req) => getCase(ctx, await actor(req), (req.params as { id: string }).id));
+  app.get("/api/w/:ws/messages/:id/attachments", async (req) => ({ attachments: await listMessageAttachments(ctx, await actor(req), (req.params as { id: string }).id) }));
+  app.get("/api/w/:ws/messages/:id/attachments/:attachmentId", async (req, reply) => {
+    const p = req.params as { id: string; attachmentId: string };
+    const file = await getMessageAttachment(ctx, await actor(req), p.id, p.attachmentId);
+    const name = file.name.replace(/[^\w.\- äöüÄÖÜß]/g, "_").slice(0, 120) || "anhang";
+    // Customer files are untrusted: images shown as images, everything else only as a download, never rendered.
+    return reply
+      .type(file.inline ? file.contentType : "application/octet-stream")
+      .header("Content-Disposition", `${file.inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`)
+      .header("Content-Security-Policy", "default-src 'none'; sandbox")
+      .header("Cache-Control", "private, max-age=300")
+      .send(file.data);
+  });
   app.post("/api/w/:ws/cases/:id/notes", async (req) => {
     await addNote(ctx, await actor(req), (req.params as { id: string }).id, parse(z.object({ body: z.string() }), req.body).body);
     return { ok: true };
@@ -379,7 +393,7 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
-    reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
+    if (!reply.getHeader("Content-Security-Policy")) reply.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'");
     return payload;
   });
   return app;

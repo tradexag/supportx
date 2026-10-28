@@ -1,4 +1,6 @@
 import type {
+  AttachmentFile,
+  AttachmentInfo,
   ConnectorCapabilities,
   IngressMessage,
   MessageAddress,
@@ -202,6 +204,25 @@ export class GraphMailChannel implements MessageChannel {
       timeoutMs: this.#config.timeoutMs ?? 20_000,
       fetchImpl: this.#config.fetchImpl,
     })) as Json | null;
+  }
+
+  /** File attachments of a message; inline parts (logos in templates) are left out. */
+  async listAttachments(externalMessageId: string): Promise<AttachmentInfo[]> {
+    const url = new URL(`${this.#mailboxPath()}/messages/${encodeURIComponent(externalMessageId)}/attachments`);
+    url.searchParams.set("$select", "id,name,contentType,size,isInline");
+    const body = await this.#call("GET", url.toString());
+    const rows = Array.isArray(body?.value) ? (body!.value as Json[]) : [];
+    return rows
+      .filter((a) => a["@odata.type"] === undefined || a["@odata.type"] === "#microsoft.graph.fileAttachment")
+      .filter((a) => a.isInline !== true)
+      .map((a) => ({ id: String(a.id), name: typeof a.name === "string" ? a.name : "Anhang", contentType: typeof a.contentType === "string" ? a.contentType.toLowerCase() : "application/octet-stream", size: Number(a.size ?? 0) }));
+  }
+
+  async getAttachment(externalMessageId: string, _threadKey: string, attachmentId: string): Promise<AttachmentFile> {
+    const body = await this.#call("GET", `${this.#mailboxPath()}/messages/${encodeURIComponent(externalMessageId)}/attachments/${encodeURIComponent(attachmentId)}`);
+    if (!body || typeof body.contentBytes !== "string") throw new HttpError("Anhang ohne Inhalt (kein Datei-Anhang).", 0, false);
+    const data = Buffer.from(body.contentBytes, "base64");
+    return { id: attachmentId, name: typeof body.name === "string" ? body.name : "Anhang", contentType: typeof body.contentType === "string" ? body.contentType.toLowerCase() : "application/octet-stream", size: data.length, data };
   }
 
   #mailboxPath(): string {

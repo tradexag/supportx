@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
 import { after, afterEach, describe, it } from "node:test";
 import { completeEbayConsent, createEbayConnection, createKauflandConnection, createMiraklConnection, setMiraklBackgroundSync, setSendEnabled, startEbayConsent, verifyReplyRoute } from "../../packages/services/connections.ts";
 import type { ServiceError } from "../../packages/services/context.ts";
@@ -95,7 +96,7 @@ describe("Shop Apotheke (Mirakl)", () => {
     const s = await seedWorkspace(h);
     const fake = await startFakeMirakl({ apiKey: "mirakl-key" });
     closers.push(() => fake.close());
-    fake.addThread({ id: "th-1", topic: "Lieferung", orderId: "SA-100234-A", customerId: "c-77", customerName: "Max Kunde", text: "Wann kommt meine Bestellung?" });
+    fake.addThread({ id: "th-1", topic: "Lieferung", orderId: "SA-100234-A", customerId: "c-77", customerName: "Max Kunde", text: "Wann kommt meine Bestellung?", files: [{ id: "att-9", name: "foto.jpg", data: Buffer.from("jpegdata") }] });
     const id = await createMiraklConnection(h.ctx, s.owner, { displayName: "Shop Apotheke", baseUrl: fake.baseUrl, apiKey: "mirakl-key" });
 
     await scheduleTick(h.ctx);
@@ -105,6 +106,12 @@ describe("Shop Apotheke (Mirakl)", () => {
     await sync(s, id); // "Jetzt abrufen"
     const conv = await one<{ source_platform: string }>(h.ctx.db, "SELECT source_platform FROM conversations WHERE connection_id = $1", [id]);
     assert.equal(conv?.source_platform, "shop_apotheke");
+    const msg = (await one<{ id: string }>(h.ctx.db, "SELECT id FROM messages WHERE connection_id = $1 AND has_attachments", [id]))!;
+    const files = await listMessageAttachments(h.ctx, s.agent, msg.id);
+    assert.deepEqual(files.map((f) => [f.id, f.name, f.contentType, f.inline]), [["att-9", "foto.jpg", "image/jpeg", true]]);
+    const photo = await getMessageAttachment(h.ctx, s.agent, msg.id, "att-9");
+    assert.equal(photo.data.toString(), "jpegdata");
+    assert.ok(fake.requests.some((r) => r.startsWith("GET /api/inbox/threads/att-9/download")), "M13 download");
 
     await rejectsWith(setMiraklBackgroundSync(h.ctx, s.owner, id, { allowed: true, evidenceNote: "" }), "INVALID");
     await setMiraklBackgroundSync(h.ctx, s.owner, id, { allowed: true, evidenceNote: "Freigabe per Mail vom Partner-Management, 22.10." });

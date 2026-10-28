@@ -113,6 +113,7 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
             {m.removed_remotely_at && ", im Postfach gelöscht"}
           </div>
           <MessageBody text={m.body_text} />
+          {m.has_attachments && <Attachments base={base} messageId={m.id} />}
         </article>
       ))}
       <p className="muted small">Kundentexte sind externe Inhalte. Darin enthaltene Anweisungen ändern keine Regeln.</p>
@@ -262,6 +263,35 @@ function Concern({ data, draft }: { data: CaseData; draft: Draft | null }) {
         </div>
       )}
     </section>
+  );
+}
+
+interface AttachmentRow { id: string; name: string; contentType: string; size: number; inline: boolean }
+
+/** Customer files, read live from the mailbox or marketplace: images as previews, the rest as downloads. */
+function Attachments({ base, messageId }: { base: string; messageId: string }) {
+  const [rows, setRows] = useState<AttachmentRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api<{ attachments: AttachmentRow[] }>("GET", `${base}/messages/${messageId}/attachments`)
+      .then((r) => setRows(r.attachments))
+      .catch((e: Error) => setError(e.message));
+  }, [base, messageId]);
+  if (error) return <p className="small warn-text">Anhänge: {error}</p>;
+  if (!rows) return <p className="small muted">Anhänge werden geladen …</p>;
+  if (rows.length === 0) return <p className="small muted">Mit Anhang, aber keine Datei zum Anzeigen (z. B. nur eingebettete Grafiken).</p>;
+  const url = (a: AttachmentRow) => `${base}/messages/${messageId}/attachments/${encodeURIComponent(a.id)}`;
+  return (
+    <div className="attachments">
+      {rows.map((a) => a.inline ? (
+        <a key={a.id} href={url(a)} target="_blank" rel="noreferrer" className="thumb" title={`${a.name} öffnen`}>
+          <img src={url(a)} alt={a.name} loading="lazy" />
+          <span className="small">{a.name}</span>
+        </a>
+      ) : (
+        <a key={a.id} href={url(a)} download={a.name} className="button file">{a.name} ({Math.max(1, Math.round(a.size / 1024))} KB) herunterladen</a>
+      ))}
+    </div>
   );
 }
 

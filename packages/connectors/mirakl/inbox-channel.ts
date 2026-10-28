@@ -1,5 +1,5 @@
-import type { ConnectorCapabilities, IngressMessage, MessageAddress, MessageChannel, ReconcileOutcome, ReplyOutcome, ReplyRequest, SyncResult } from "../../core/contracts.ts";
-import { assertAllowedEndpoint, HttpError, requestJson } from "../http.ts";
+import type { AttachmentFile, AttachmentInfo, ConnectorCapabilities, IngressMessage, MessageAddress, MessageChannel, ReconcileOutcome, ReplyOutcome, ReplyRequest, SyncResult } from "../../core/contracts.ts";
+import { assertAllowedEndpoint, HttpError, requestBinary, requestJson } from "../http.ts";
 import { cursorStart, isoOrNow, sameText, sendFailure, threadId } from "../marketplace-common.ts";
 
 /**
@@ -185,6 +185,29 @@ export class MiraklInboxChannel implements MessageChannel {
     }
   }
 
+  /** Attachments as listed on the message in the thread (M10); read when a person opens the case. */
+  async listAttachments(externalMessageId: string, externalThreadKey: string): Promise<AttachmentInfo[]> {
+    const thread = await this.#thread(threadId(externalThreadKey, PREFIX));
+    const message = (Array.isArray(thread.messages) ? (thread.messages as Json[]) : []).find((m) => String(m.id) === externalMessageId);
+    return (Array.isArray(message?.attachments) ? (message!.attachments as Json[]) : [])
+      .filter((a) => a.id !== undefined)
+      .map((a) => {
+        const name = typeof a.name === "string" ? a.name : "Anhang";
+        return { id: String(a.id), name, contentType: typeof a.type === "string" && a.type.includes("/") ? a.type.toLowerCase() : typeByName(name), size: Number(a.size ?? 0) };
+      });
+  }
+
+  /** M13: GET /api/inbox/threads/{attachment_id}/download (raw file). */
+  async getAttachment(externalMessageId: string, externalThreadKey: string, attachmentId: string): Promise<AttachmentFile> {
+    const listed = (await this.listAttachments(externalMessageId, externalThreadKey)).find((a) => a.id === attachmentId);
+    const url = new URL(`${this.#base}/api/inbox/threads/${encodeURIComponent(attachmentId)}/download`);
+    if (this.#config.shopId) url.searchParams.set("shop_id", this.#config.shopId);
+    const file = await requestBinary(url, { headers: { Authorization: this.#config.apiKey }, timeoutMs: this.#config.timeoutMs ?? 20_000, fetchImpl: this.#config.fetchImpl, maxBytes: 15 * 1024 * 1024 });
+    const name = listed?.name ?? file.fileName ?? "Anhang";
+    const contentType = file.contentType === "application/octet-stream" ? typeByName(name) : file.contentType;
+    return { id: attachmentId, name, contentType, size: file.data.length, data: file.data };
+  }
+
   async checkAccess(): Promise<{ ok: boolean; detail: string }> {
     try {
       await this.#call("GET", "/api/inbox/threads", { limit: 1 });
@@ -193,4 +216,9 @@ export class MiraklInboxChannel implements MessageChannel {
       return { ok: false, detail: error instanceof HttpError ? error.message : (error as Error).message };
     }
   }
+}
+
+function typeByName(name: string): string {
+  const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase();
+  return ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", pdf: "application/pdf" } as Record<string, string>)[ext ?? ""] ?? "application/octet-stream";
 }

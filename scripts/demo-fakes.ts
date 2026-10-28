@@ -1,6 +1,18 @@
 import { DEMO, demoInboundMails, demoWeclappData } from "../packages/testing/demo-data.ts";
 import { startFakeGraph } from "../packages/testing/fake-graph.ts";
 import { startFakeWeclapp } from "../packages/testing/fake-weclapp.ts";
+import { deflateSync } from "node:zlib";
+
+/** A plain coloured PNG (synthetic "customer photo" for the demo). */
+function solidPng(width: number, height: number, [r, g, b]: [number, number, number]): string {
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (buf: Buffer) => { let c = 0xffffffff; for (const byte of buf) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type: string, data: Buffer) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([len, td, c]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3).map((_, i) => [r, g, b][i % 3]!)]);
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]).toString("base64");
+}
 
 /**
  * DEMO ONLY: local stand-ins for weclapp and Microsoft Graph with synthetic data.
@@ -15,7 +27,8 @@ export async function startDemoFakes() {
   for (const mail of demoInboundMails()) {
     const conversationId = conversations.get(mail.subject) ?? `demo-conv-${mail.key}`;
     conversations.set(mail.subject, conversationId);
-    graph.addInbound({ from: mail.from, fromName: mail.fromName, replyTo: mail.replyTo, subject: mail.subject, body: mail.body, conversationId, receivedAt: new Date(Date.now() - mail.hoursAgo * 3_600_000), id: `AAMk-demo-${mail.key}`, internetMessageId: `<demo-${mail.key}@demo-haendler.example.invalid>` });
+    graph.addInbound({ from: mail.from, fromName: mail.fromName, replyTo: mail.replyTo, subject: mail.subject, body: mail.body, conversationId, receivedAt: new Date(Date.now() - mail.hoursAgo * 3_600_000), id: `AAMk-demo-${mail.key}`, internetMessageId: `<demo-${mail.key}@demo-haendler.example.invalid>`,
+      attachments: mail.key === "shopify-wrong" ? [{ id: "demo-foto-1", name: "erhaltener-artikel.png", contentType: "image/png", contentBytes: solidPng(320, 240, [190, 40, 40]) }] : undefined });
   }
   return { weclapp, graph };
 }

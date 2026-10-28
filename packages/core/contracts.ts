@@ -99,6 +99,18 @@ export type ReconcileOutcome =
   | { state: "not_found" }
   | { state: "unknown"; error: string };
 
+/** A file the customer attached to a message (listed on demand, never stored). */
+export interface AttachmentInfo {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+}
+
+export interface AttachmentFile extends AttachmentInfo {
+  data: Buffer;
+}
+
 /**
  * Message transport adapter. Implementations: Microsoft Graph mail, eBay Commerce
  * Message API, Kaufland Seller API tickets and Mirakl inbox (Shop Apotheke).
@@ -112,6 +124,9 @@ export interface MessageChannel {
   readonly ownAddresses: ReadonlyArray<string>;
   /** Read changes since the stored cursors. Must be safe to repeat. */
   sync(cursors: Readonly<Record<string, string>>): Promise<SyncResult>;
+  /** Attachments of one message, read live from the provider (optional per connector). */
+  listAttachments?(externalMessageId: string, externalThreadKey: string): Promise<AttachmentInfo[]>;
+  getAttachment?(externalMessageId: string, externalThreadKey: string, attachmentId: string): Promise<AttachmentFile>;
   /** Only the outbox worker may call this, after its atomic precondition check. */
   sendReply(request: ReplyRequest): Promise<ReplyOutcome>;
   /**

@@ -23,6 +23,7 @@ export interface FakeMail {
   body: string;
   receivedDateTime: string;
   headers: Array<{ name: string; value: string }>;
+  attachments?: Array<{ id: string; name: string; contentType: string; contentBytes: string; isInline?: boolean }>;
 }
 
 export type ReplyFault = "none" | "timeout_after_send" | "timeout_before_send" | "server_error_after_send" | "reject_400" | "throttle_429";
@@ -33,7 +34,7 @@ export interface FakeGraph {
   mailbox: string;
   messages: FakeMail[];
   replies: Array<{ inReplyTo: string; comment: string; headers: Array<{ name: string; value: string }> }>;
-  addInbound(input: { from: string; fromName?: string; subject: string; body: string; conversationId?: string; replyTo?: string; receivedAt?: Date; internetMessageId?: string; id?: string }): FakeMail;
+  addInbound(input: { from: string; fromName?: string; subject: string; body: string; conversationId?: string; replyTo?: string; receivedAt?: Date; internetMessageId?: string; id?: string; attachments?: FakeMail["attachments"] }): FakeMail;
   addSent(input: { to: string; subject: string; body: string; conversationId: string; headers?: Array<{ name: string; value: string }> }): FakeMail;
   setReplyFault(fault: ReplyFault): void;
   /** Keep sent copies from carrying our marker header (tests the no-header path). */
@@ -92,6 +93,7 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
       body: input.body,
       receivedDateTime: (input.receivedAt ?? new Date()).toISOString(),
       headers: [],
+      attachments: input.attachments,
     };
     messages.push(mail);
     return mail;
@@ -108,7 +110,7 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
     replyTo: m.replyTo.map((t) => ({ emailAddress: t })),
     receivedDateTime: m.receivedDateTime,
     sentDateTime: m.receivedDateTime,
-    hasAttachments: false,
+    hasAttachments: (m.attachments?.length ?? 0) > 0,
     body: { contentType: "text", content: m.body },
     internetMessageHeaders: [{ name: "Message-ID", value: m.internetMessageId }, ...m.headers],
   });
@@ -164,6 +166,16 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
     if (req.method === "GET" && single) {
       const mail = messages.find((m) => m.id === decodeURIComponent(single[1]!));
       return mail ? send(200, toGraph(mail)) : send(404, { error: { code: "ErrorItemNotFound", message: "Not found" } });
+    }
+
+    const files = /^\/messages\/([^/]+)\/attachments(?:\/([^/]+))?$/.exec(rest);
+    if (req.method === "GET" && files) {
+      const mail = messages.find((m) => m.id === decodeURIComponent(files[1]!));
+      if (!mail) return send(404, { error: { code: "ErrorItemNotFound", message: "Not found" } });
+      const all = (mail.attachments ?? []).map((a) => ({ "@odata.type": "#microsoft.graph.fileAttachment", id: a.id, name: a.name, contentType: a.contentType, size: Buffer.from(a.contentBytes, "base64").length, isInline: a.isInline ?? false, contentBytes: a.contentBytes }));
+      if (!files[2]) return send(200, { value: all.map(({ contentBytes: _c, ...meta }) => meta) });
+      const one = all.find((a) => a.id === decodeURIComponent(files[2]!));
+      return one ? send(200, one) : send(404, { error: { code: "ErrorItemNotFound", message: "Not found" } });
     }
 
     const reply = /^\/messages\/([^/]+)\/reply$/.exec(rest);

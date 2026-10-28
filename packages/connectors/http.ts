@@ -95,3 +95,23 @@ export async function requestJson(url: URL | string, options: RequestOptions): P
     throw new HttpError("Antwort ist kein gültiges JSON.", response.status, false);
   }
 }
+
+/** GET a file (binary body). Same failure classification as requestJson; size capped. */
+export async function requestBinary(url: URL | string, options: Omit<RequestOptions, "method" | "body"> & { maxBytes: number }): Promise<{ data: Buffer; contentType: string; fileName?: string }> {
+  const doFetch = options.fetchImpl ?? fetch;
+  let response: Response;
+  try {
+    response = await doFetch(url, { method: "GET", headers: options.headers, signal: AbortSignal.timeout(options.timeoutMs), redirect: "error" });
+  } catch (error) {
+    const name = (error as Error).name;
+    throw new HttpError(name === "TimeoutError" || name === "AbortError" ? `Zeitüberschreitung nach ${options.timeoutMs} ms` : `Verbindungsfehler: ${(error as Error).message}`, 0, true);
+  }
+  if (!response.ok) throw new HttpError(describeStatus(response.status), response.status, response.status === 429 || response.status >= 500);
+  const length = Number(response.headers.get("content-length") ?? 0);
+  if (length > options.maxBytes) throw new HttpError("Datei ist zu groß.", 413, false);
+  const data = Buffer.from(await response.arrayBuffer());
+  if (data.length > options.maxBytes) throw new HttpError("Datei ist zu groß.", 413, false);
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const fileName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1] ?? /filename="?([^";]+)"?/i.exec(disposition)?.[1];
+  return { data, contentType: (response.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim().toLowerCase(), fileName: fileName ? decodeURIComponent(fileName) : undefined };
+}

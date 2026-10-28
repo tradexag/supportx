@@ -274,7 +274,7 @@ export interface FakeMiraklThread {
   topic: { type: "FREE_TEXT"; value: string };
   entities: Array<{ id: string; type: string; label: string }>;
   current_participants: Array<{ id?: string; type: "CUSTOMER" | "OPERATOR" | "SHOP"; display_name: string }>;
-  messages: Array<{ id: string; body: string; date_created: string; from: { type: string; display_name: string }; to: Array<{ type: string; display_name: string }> }>;
+  messages: Array<{ id: string; body: string; date_created: string; from: { type: string; display_name: string }; to: Array<{ type: string; display_name: string }>; attachments?: Array<{ id: string; name: string; size: number }> }>;
   date_updated: string;
 }
 
@@ -283,13 +283,14 @@ export interface FakeMirakl {
   threads: FakeMiraklThread[];
   replies: Array<{ threadId: string; body: string; to: Array<{ type: string; id?: string }> }>;
   requests: string[];
-  addThread(input: { id: string; topic: string; orderId: string; customerId: string; customerName: string; text: string; from?: "CUSTOMER_USER" | "OPERATOR_USER"; at?: Date }): void;
+  addThread(input: { id: string; topic: string; orderId: string; customerId: string; customerName: string; text: string; from?: "CUSTOMER_USER" | "OPERATOR_USER"; at?: Date; files?: Array<{ id: string; name: string; data: Buffer }> }): void;
   setSendFault(fault: SendFault): void;
   close(): Promise<void>;
 }
 
 export async function startFakeMirakl(opts: { apiKey: string; hangMs?: number }): Promise<FakeMirakl> {
   const threads: FakeMiraklThread[] = [];
+  const files = new Map<string, { name: string; data: Buffer }>();
   const replies: FakeMirakl["replies"] = [];
   const requests: string[] = [];
   let seq = 1;
@@ -304,6 +305,13 @@ export async function startFakeMirakl(opts: { apiKey: string; hangMs?: number })
       const withMessages = url.searchParams.get("with_messages") === "true";
       const data = threads.filter((t) => new Date(t.date_updated).getTime() >= since).map((t) => ({ ...t, messages: withMessages ? t.messages.slice(-100) : undefined }));
       return json(res, 200, { data });
+    }
+    const download = /^\/api\/inbox\/threads\/([^/]+)\/download$/.exec(url.pathname);
+    if (req.method === "GET" && download) {
+      const file = files.get(decodeURIComponent(download[1]!));
+      if (!file) return json(res, 404, { message: "not found" });
+      res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${file.name}"` });
+      return void res.end(file.data);
     }
     const one = /^\/api\/inbox\/threads\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && one) {
@@ -335,13 +343,14 @@ export async function startFakeMirakl(opts: { apiKey: string; hangMs?: number })
     replies,
     requests,
     addThread: (input) => {
+      for (const f of input.files ?? []) files.set(f.id, { name: f.name, data: f.data });
       const at = (input.at ?? new Date()).toISOString();
       threads.push({
         id: input.id,
         topic: { type: "FREE_TEXT", value: input.topic },
         entities: [{ id: input.orderId, type: "MMP_ORDER", label: input.orderId }],
         current_participants: [{ id: input.customerId, type: "CUSTOMER", display_name: input.customerName }, { type: "OPERATOR", display_name: "Operator" }, { id: "2001", type: "SHOP", display_name: "Shop" }],
-        messages: [{ id: `msg-${seq++}`, body: input.text, date_created: at, from: { type: input.from ?? "CUSTOMER_USER", display_name: input.customerName }, to: [{ type: "SHOP", display_name: "Shop" }] }],
+        messages: [{ id: `msg-${seq++}`, body: input.text, date_created: at, from: { type: input.from ?? "CUSTOMER_USER", display_name: input.customerName }, to: [{ type: "SHOP", display_name: "Shop" }], ...(input.files?.length ? { attachments: input.files.map((f) => ({ id: f.id, name: f.name, size: f.data.length })) } : {}) }],
         date_updated: at,
       });
     },
