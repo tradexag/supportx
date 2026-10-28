@@ -93,7 +93,6 @@ export async function enrichConversation(ctx: AppContext, workspaceId: string, c
         }
       }
       await storeLink(tx, conv, status, result, refs, linkedBy, userId);
-      await enqueue(tx, { workspaceId, type: "case.draft", payload: { conversationId }, dedupeKey: `case.draft:${conversationId}` });
       await audit(tx, opts.actor ?? { type: "system", workspaceId }, "order.matched", "conversation", conversationId, { status, references: refs });
     });
     return status;
@@ -138,7 +137,6 @@ export async function linkOrderManually(ctx: AppContext, actor: Actor, conversat
     const status: MatchStatus = result.status === "unique" ? "unique" : result.status === "error" ? "error" : "missing";
     await withTx(ctx.db, async (tx) => {
       await storeLink(tx, convRow, status, result, [input.candidateId!], "user", actorId(actor));
-      await enqueue(tx, { workspaceId: actor.workspaceId, type: "case.draft", payload: { conversationId }, dedupeKey: `case.draft:${conversationId}` });
       await audit(tx, actor, "order.linked_manually", "conversation", conversationId, { candidateId: input.candidateId, status });
     });
     return status;

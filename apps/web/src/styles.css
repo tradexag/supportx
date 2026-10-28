@@ -184,3 +184,10 @@ a.button:hover { background: var(--text); color: var(--card); }
 
 .send-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--line); }
 .msg.related { opacity: .85; border-left-style: dashed; }
+
+/* Decision before the reply, title plausibility hint */
+.decision { border: 1px solid var(--line); padding: 12px 14px; margin-bottom: 14px; display: grid; gap: 8px; }
+.decision p { margin: 0; }
+.title-hint { margin-top: 12px; border-left: 3px solid var(--signal); background: var(--warn-bg); padding: 10px 12px; }
+.title-hint ul { margin: 6px 0; padding-left: 18px; }
+.title-hint p { margin: 0; }

@@ -36,7 +36,7 @@ import { handleEbayAccountDeletion } from "../../packages/services/ebay-account-
 import { ServiceError, type Actor, type AppContext } from "../../packages/services/context.ts";
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
-import { approveDraft, discardDraft, editDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
+import { approveDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
 const SESSION_COOKIE = "supportx_session";
 const webDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "web", "dist");
@@ -169,7 +169,8 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
     return { status: await linkOrderManually(ctx, await actor(req), (req.params as { id: string }).id, body) };
   });
   app.post("/api/w/:ws/cases/:id/redraft", async (req) => {
-    await requestRedraft(ctx, await actor(req), (req.params as { id: string }).id);
+    const body = parse(z.object({ decision: z.enum(["customer_right", "customer_wrong", "ask_customer"]) }), req.body);
+    await requestRedraft(ctx, await actor(req), (req.params as { id: string }).id, body.decision);
     return { ok: true };
   });
 
@@ -177,6 +178,10 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.put("/api/w/:ws/drafts/:id", async (req) => {
     const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
     return editDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  app.post("/api/w/:ws/drafts/:id/polish", async (req) => {
+    const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
+    return polishDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
   });
   app.post("/api/w/:ws/drafts/:id/discard", async (req) => {
     await discardDraft(ctx, await actor(req), (req.params as { id: string }).id);

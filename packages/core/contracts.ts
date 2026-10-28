@@ -141,6 +141,9 @@ export interface OrderLineFact {
   position?: number;
   title: string;
   articleId?: string;
+  /** Article in the ERP the position is linked to (name may differ from the order title). */
+  articleNumber?: string;
+  articleName?: string;
   quantity: number;
   shippedQuantity?: number;
   returnedQuantity?: number;
@@ -250,6 +253,21 @@ export interface ProposalInput {
   language: string;
   tone: string;
   signature: string;
+  /** What a person decided before the reply is written. */
+  decision?: ReplyDecision;
+  /** Plausibility hints (e.g. pack size the customer names is not in the order). */
+  hints?: ReadonlyArray<string>;
+}
+
+export type ReplyDecision = "customer_right" | "customer_wrong" | "ask_customer";
+
+export interface PolishInput {
+  text: string;
+  messages: ProposalInput["messages"];
+  facts: ReadonlyArray<AllowedFact>;
+  language: string;
+  tone: string;
+  signature: string;
 }
 
 export interface Proposal {
@@ -268,4 +286,6 @@ export interface AiProvider {
   readonly model: string;
   readonly promptVersion: string;
   propose(input: ProposalInput): Promise<Proposal>;
+  /** Rewrite a person's text friendly and customer-oriented; only providers with a language model offer it. */
+  polish?(input: PolishInput): Promise<string>;
 }

@@ -11,6 +11,7 @@ export interface FakeWeclappData {
   salesOrder: Array<Record<string, unknown>>;
   shipment: Array<Record<string, unknown>>;
   salesInvoice: Array<Record<string, unknown>>;
+  article?: Array<Record<string, unknown>>;
 }
 
 export interface FakeWeclapp {
@@ -47,12 +48,12 @@ export async function startFakeWeclapp(data: FakeWeclappData, opts: { token: str
       return send(status, { error: "simulated failure" });
     }
     if (req.method !== "GET") return send(405, { error: "read-only fake" });
-    const match = /^\/webapp\/api\/v2\/(salesOrder|shipment|salesInvoice)$/.exec(url.pathname);
+    const match = /^\/webapp\/api\/v2\/(salesOrder|shipment|salesInvoice|article)$/.exec(url.pathname);
     if (!match) return send(404, { error: "not found" });
     for (const key of url.searchParams.keys()) {
       if (opts.rejectFilters?.includes(`${match[1]}.${key}`)) return send(400, { error: "unexpected filter property" });
     }
-    let rows = data[match[1] as keyof FakeWeclappData];
+    let rows = data[match[1] as keyof FakeWeclappData] ?? [];
     for (const [key, value] of url.searchParams) {
       if (!key.endsWith("-eq")) continue;
       const field = key.slice(0, -3);

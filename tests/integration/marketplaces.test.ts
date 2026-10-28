@@ -8,7 +8,7 @@ import { drainJobs, scheduleTick } from "../../packages/services/worker.ts";
 import { many, one } from "../../packages/storage/db.ts";
 import { buildServer } from "../../apps/server/app.ts";
 import { signEbayNotice, startFakeEbay, startFakeKaufland, startFakeMirakl } from "../../packages/testing/fake-marketplaces.ts";
-import { closeDb, createHarness, currentDraft, seedWorkspace, type Harness, type SeededWorkspace } from "./harness.ts";
+import { closeDb, createHarness, currentDraft, drainWithDrafts, seedWorkspace, type Harness, type SeededWorkspace } from "./harness.ts";
 
 let h: Harness | null = null;
 const closers: Array<() => Promise<void>> = [];
@@ -25,7 +25,7 @@ async function rejectsWith(promise: Promise<unknown>, code: string): Promise<voi
 
 async function sync(s: SeededWorkspace, connectionId: string): Promise<void> {
   await enqueue(h!.ctx.db, { workspaceId: s.workspaceId, type: "mail.sync", payload: { connectionId }, dedupeKey: `mail.sync:${connectionId}` });
-  await drainJobs(h!.ctx, { maxJobs: 200 });
+  await drainWithDrafts(h!, 200);
 }
 
 const KFL = { clientKey: "client-key-test", secretKey: "secret-key-test" };

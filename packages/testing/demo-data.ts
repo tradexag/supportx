@@ -65,6 +65,11 @@ export function demoWeclappData(): FakeWeclappData {
         salesChannel: DEMO.channels.docmorris, customerId: "cust-dm2", tags: [], orderItems: [item("soi-9", 1, "Demo-Nahrungsergänzung 60 Kps.", 1, 0)],
       },
     ],
+    // Linked ERP articles. Position soi-6 carries a marketplace title that differs from its article (demo of the title check).
+    article: [
+      { id: "ART-soi-1", articleNumber: "D-1001", name: "Demo-Teekanne Glas 1,2 l" },
+      { id: "ART-soi-6", articleNumber: "D-1006", name: "Demo-Kissenbezug 40x40, rot" },
+    ],
     shipment: [
       {
         id: "sh-1", shipmentNumber: "LS-5001", mainSalesOrderId: "so-amz-1", salesOrders: [{ id: "so-amz-1" }], status: "SHIPPED",

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import type { AllowedFact, CaseRisk, OrderRecord, Proposal, ProposalInput, SourcePlatform } from "../core/contracts.ts";
+import type { AiProvider, AllowedFact, CaseRisk, OrderRecord, Proposal, ProposalInput, ReplyDecision, SourcePlatform } from "../core/contracts.ts";
+import { checkTitles } from "../core/title-check.ts";
+import { customerText } from "../core/customer-text.ts";
 import { detectRisks, newestEmailText } from "../core/classify.ts";
 import { checkDraft, hasBlockingIssue, type DraftIssue } from "../core/draft-check.ts";
 import { buildOrderFacts } from "../core/facts.ts";
@@ -70,7 +72,15 @@ function orderStatusForAi(status: string): ProposalInput["orderStatus"] {
  * the conversation (no internal notes) and the closed list of ERP facts; its
  * output is schema-validated and claim-checked on the server.
  */
-export async function generateDraft(ctx: AppContext, workspaceId: string, conversationId: string): Promise<string | null> {
+export const DECISIONS: ReadonlyArray<ReplyDecision> = ["customer_right", "customer_wrong", "ask_customer"];
+
+/** Plausibility hints for the latest customer message against the linked order. */
+export function titleHintsFor(order: OrderRecord | null, latestCustomerText: string): string[] {
+  if (!order) return [];
+  return checkTitles(customerText(latestCustomerText), order.lines.map((l) => ({ position: l.position, title: l.title, articleName: l.articleName }))).map((h) => h.text);
+}
+
+export async function generateDraft(ctx: AppContext, workspaceId: string, conversationId: string, decision?: ReplyDecision): Promise<string | null> {
   const conv = await loadConversation(ctx.db, workspaceId, conversationId);
   if (!conv.latest_inbound_message_id) return null;
   const ws = (await one<WorkspaceRow>(ctx.db, "SELECT reply_signature, reply_tone, default_language, allowed_link_prefixes, ai_enabled, ai_secret_id FROM workspaces WHERE id = $1", [workspaceId]))!;
@@ -90,10 +100,12 @@ export async function generateDraft(ctx: AppContext, workspaceId: string, conver
     language: ws.default_language,
     tone: ws.reply_tone,
     signature: ws.reply_signature,
+    decision,
+    hints: titleHintsFor(order, [...history].find((m) => m.direction === "inbound")?.body_text ?? ""),
   };
 
   // The workspace's own Claude key wins over the installation's provider.
-  const provider = !ws.ai_enabled ? new RulesProvider() : ws.ai_secret_id ? ctx.aiWithKey(await ctx.secrets.read(ctx.db, workspaceId, ws.ai_secret_id)) : ctx.ai;
+  const provider = await providerFor(ctx, ws, workspaceId);
   let proposal: Proposal;
   let generatedBy = provider.id;
   let model: string | null = provider.model;
@@ -134,13 +146,13 @@ export async function generateDraft(ctx: AppContext, workspaceId: string, conver
     const draft = await one<{ id: string }>(
       tx,
       `INSERT INTO drafts (workspace_id, conversation_id, based_on_conversation_version, inbound_message_id, order_link_id, intent, summary, body,
-         cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+         cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
       [
         workspaceId, conversationId, locked.version, locked.latest_inbound_message_id, linkId, proposal.intent,
         [proposal.summary, providerNote].filter(Boolean).join(" "), proposal.replyText, [...proposal.citedFactIds],
         JSON.stringify(facts), JSON.stringify(proposal.missingInformation), JSON.stringify(proposal.suggestedActions), risks,
-        JSON.stringify(issues), generatedBy, model, promptVersion,
+        JSON.stringify(issues), generatedBy, model, promptVersion, decision ?? null,
       ],
     );
     await tx.query("UPDATE conversations SET last_error = $3 WHERE workspace_id = $1 AND id = $2", [workspaceId, conversationId, providerNote]);
@@ -188,10 +200,65 @@ export async function discardDraft(ctx: AppContext, actor: Actor, draftId: strin
   });
 }
 
-export async function requestRedraft(ctx: AppContext, actor: Actor, conversationId: string): Promise<void> {
+/**
+ * A reply is only written after a person decided (customer right / not right / ask first).
+ * Nothing generates a reply on its own, so no AI cost arises without a click.
+ */
+export async function requestRedraft(ctx: AppContext, actor: Actor, conversationId: string, decision: ReplyDecision): Promise<void> {
   requireRole(actor, ["owner", "agent"]);
+  if (!DECISIONS.includes(decision)) throw new ServiceError(400, "INVALID", "Bitte zuerst entscheiden, ob der Kunde recht hat.");
   await loadConversation(ctx.db, actor.workspaceId, conversationId);
-  await enqueue(ctx.db, { workspaceId: actor.workspaceId, type: "case.draft", payload: { conversationId }, dedupeKey: `case.draft:${conversationId}` });
+  await enqueue(ctx.db, { workspaceId: actor.workspaceId, type: "case.draft", payload: { conversationId, decision }, dedupeKey: `case.draft:${conversationId}:${decision}` });
+  await audit(ctx.db, actor, "draft.requested", "conversation", conversationId, { decision });
+}
+
+/** Which writer this workspace uses: its own Claude key, the installation's Claude, or the free templates. */
+async function providerFor(ctx: AppContext, ws: Pick<WorkspaceRow, "ai_enabled" | "ai_secret_id">, workspaceId: string): Promise<AiProvider> {
+  if (!ws.ai_enabled) return new RulesProvider();
+  return ws.ai_secret_id ? ctx.aiWithKey(await ctx.secrets.read(ctx.db, workspaceId, ws.ai_secret_id)) : ctx.ai;
+}
+
+export async function aiWriter(ctx: AppContext, workspaceId: string): Promise<"own_key" | "installation" | "rules"> {
+  const ws = (await one<WorkspaceRow>(ctx.db, "SELECT ai_enabled, ai_secret_id FROM workspaces WHERE id = $1", [workspaceId]))!;
+  if (!ws.ai_enabled) return "rules";
+  if (ws.ai_secret_id) return "own_key";
+  return ctx.ai.polish ? "installation" : "rules";
+}
+
+/**
+ * The person's own text, rewritten friendly and customer-oriented (one AI call, on click).
+ * The result is saved like a manual edit, so the draft check runs and approvals are voided.
+ */
+export async function polishDraft(ctx: AppContext, actor: Actor, draftId: string, input: { body: string; expectedVersion: number }): Promise<{ body: string; version: number; issues: DraftIssue[] }> {
+  requireRole(actor, ["owner", "agent"]);
+  const draft = await loadDraft(ctx.db, actor.workspaceId, draftId);
+  if (!["proposed", "edited"].includes(draft.status)) throw new ServiceError(409, "DRAFT_CLOSED", "Dieser Entwurf ist nicht mehr aktuell.");
+  if (draft.version !== input.expectedVersion) throw new ServiceError(409, "VERSION_CONFLICT", "Der Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.");
+  if (!input.body.trim()) throw new ServiceError(400, "INVALID", "Bitte zuerst einen Text eingeben.");
+  const ws = (await one<WorkspaceRow>(ctx.db, "SELECT reply_signature, reply_tone, default_language, ai_enabled, ai_secret_id FROM workspaces WHERE id = $1", [actor.workspaceId]))!;
+  const provider = await providerFor(ctx, ws, actor.workspaceId);
+  if (!provider.polish) throw new ServiceError(409, "NO_AI", "Freundlich formulieren braucht einen Claude-Schlüssel (Einstellungen → KI).");
+  const history = await many<{ direction: "inbound" | "outbound"; body_text: string }>(
+    ctx.db,
+    "SELECT direction, body_text FROM messages WHERE workspace_id = $1 AND conversation_id = $2 AND kind IN ('customer','echo','manual_external') ORDER BY received_at DESC LIMIT 6",
+    [actor.workspaceId, draft.conversation_id],
+  );
+  let body: string;
+  try {
+    body = await provider.polish({
+      text: input.body,
+      messages: history.reverse().map((m) => ({ direction: m.direction, text: m.direction === "inbound" ? newestEmailText(m.body_text) : m.body_text.slice(0, 3000), at: "" })),
+      facts: draft.facts,
+      language: ws.default_language,
+      tone: ws.reply_tone,
+      signature: ws.reply_signature,
+    });
+  } catch (error) {
+    throw new ServiceError(502, "AI_FAILED", `Formulieren hat nicht geklappt: ${(error as Error).message}`);
+  }
+  const saved = await editDraft(ctx, actor, draftId, { body, expectedVersion: input.expectedVersion });
+  await audit(ctx.db, actor, "draft.polished", "draft", draftId, { provider: provider.id, model: provider.model });
+  return { body, ...saved };
 }
 
 /**

@@ -134,12 +134,15 @@ export function mapShipment(shipment: Json, linesById: Map<string, OrderLineFact
   };
 }
 
-export function mapOrder(order: Json, shipments: Json[], invoices: Json[], retrievedAt: string): OrderRecord {
+export function mapOrder(order: Json, shipments: Json[], invoices: Json[], retrievedAt: string, articles: Json[] = []): OrderRecord {
+  const articlesById = new Map(articles.map((a) => [String(a.id), a]));
   const lines: OrderLineFact[] = arr(order.orderItems).map((item, i) => ({
     id: String(item.id ?? `line-${i + 1}`),
     position: num(item.positionNumber),
     title: str(item.title) ?? str(item.description) ?? "Artikel",
     articleId: str(item.articleId),
+    articleNumber: str(item.articleNumber) ?? str(articlesById.get(str(item.articleId) ?? "")?.articleNumber),
+    articleName: str(articlesById.get(str(item.articleId) ?? "")?.name),
     quantity: num(item.quantity) ?? 0,
     shippedQuantity: num(item.shippedQuantity),
     returnedQuantity: num(item.returnedQuantity),
@@ -232,7 +235,22 @@ export class WeclappOrderProvider implements OrderProvider {
       this.#tryGet("salesInvoice", { "salesOrderId-eq": id, pageSize: "100" }, rejected),
     ]);
     if (rejected.length) console.warn(`[weclapp] Filter abgelehnt, Daten fehlen am Auftrag: ${rejected.join(", ")}`);
-    return mapOrder(order, shipments.filter((s) => belongsToOrder(s, id)), invoices, new Date().toISOString());
+    return mapOrder(order, shipments.filter((s) => belongsToOrder(s, id)), invoices, new Date().toISOString(), await this.#articles(order));
+  }
+
+  /** Linked articles, for comparing the order title with the ERP article. Best effort: a failure only drops the comparison. */
+  async #articles(order: Json): Promise<Json[]> {
+    const ids = [...new Set(arr(order.orderItems).map((item) => str(item.articleId)).filter((v): v is string => !!v))].slice(0, 20);
+    const rows = await Promise.all(
+      ids.map(async (articleId) => {
+        try {
+          return (await this.#get("article", { "id-eq": articleId, pageSize: "1" })).find((a) => String(a.id) === articleId);
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return rows.filter((a): a is Json => !!a);
   }
 
   /**

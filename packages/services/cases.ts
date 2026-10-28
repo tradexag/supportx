@@ -4,7 +4,8 @@ import { many, one, withTx } from "../storage/db.ts";
 import { audit } from "./audit.ts";
 import { enqueue } from "./jobs.ts";
 import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
-import { sendBlockers } from "./replies.ts";
+import { aiWriter, sendBlockers, titleHintsFor } from "./replies.ts";
+import type { OrderRecord } from "../core/contracts.ts";
 
 export type CaseFilter = "open" | "needs_attention" | "waiting" | "closed" | "info" | "all";
 
@@ -56,7 +57,7 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
     many(ctx.db, "SELECT id, direction, kind, from_address, from_name, to_addresses, reply_to, subject, body_text, headers, has_attachments, received_at, removed_remotely_at, outbox_id FROM messages WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY received_at", [ws, conversationId]),
     many(ctx.db, "SELECT n.id, n.body, n.created_at, u.display_name AS author FROM internal_notes n JOIN users u ON u.id = n.author_user_id WHERE n.workspace_id = $1 AND n.conversation_id = $2 ORDER BY n.created_at", [ws, conversationId]),
     one(ctx.db, "SELECT id, status, references_tried, candidates, external_order_id, matched_by, linked_by, error, snapshot, retrieved_at, created_at FROM order_links WHERE workspace_id = $1 AND conversation_id = $2 AND is_current", [ws, conversationId]),
-    many(ctx.db, "SELECT id, version, status, intent, summary, body, cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, inbound_message_id, created_at, updated_at FROM drafts WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 5", [ws, conversationId]),
+    many(ctx.db, "SELECT id, version, status, intent, summary, body, cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision, inbound_message_id, created_at, updated_at FROM drafts WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 5", [ws, conversationId]),
     many(ctx.db, "SELECT a.id, a.draft_id, a.draft_version, a.approved_at, a.expires_at, a.invalidated_at, a.invalidation_reason, u.display_name AS approved_by FROM approvals a JOIN users u ON u.id = a.approved_by WHERE a.workspace_id = $1 AND a.conversation_id = $2 ORDER BY a.approved_at DESC LIMIT 10", [ws, conversationId]),
     many(ctx.db, "SELECT id, draft_id, state, attempts, last_error, expected_recipient, dispatched_at, created_at, updated_at FROM outbox WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC", [ws, conversationId]),
     many(ctx.db, "SELECT action, actor_type, details, created_at FROM audit_events WHERE workspace_id = $1 AND ((target_type = 'conversation' AND target_id = $2) OR target_id IN (SELECT id::text FROM drafts WHERE conversation_id = $3) OR target_id IN (SELECT id::text FROM outbox WHERE conversation_id = $3)) ORDER BY created_at DESC LIMIT 50", [ws, conversationId, conversationId]),
@@ -91,7 +92,11 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
             (SELECT config->>'baseUrl' FROM channel_connections WHERE workspace_id = $1 AND kind = 'mirakl_inbox' ORDER BY created_at LIMIT 1) AS mirakl_base_url`,
     [ws],
   );
-  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets };
+  const link = orderLink as { status: string; snapshot: OrderRecord | null } | null;
+  const latestInbound = [...(messages as Array<{ direction: string; kind: string; body_text: string }>)].reverse().find((m) => m.direction === "inbound" && m.kind === "customer");
+  const titleHints = titleHintsFor(link?.status === "unique" ? link.snapshot : null, latestInbound?.body_text ?? "");
+  const writer = await aiWriter(ctx, ws);
+  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets, titleHints, writer };
 }
 
 /** Counts for the inbox tabs. */

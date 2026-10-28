@@ -119,10 +119,27 @@ export function loadDemoMails(graph: FakeGraph): Map<string, { id: string; conve
   return out;
 }
 
-/** Run a mailbox sync through the job queue and process everything that follows (enrich, draft). */
+/**
+ * Process all jobs, then act like a person who asks for a reply on every open request
+ * (replies are never written on their own), and process those too.
+ */
+export async function drainWithDrafts(h: Harness, maxJobs = 500): Promise<void> {
+  await drainJobs(h.ctx, { maxJobs });
+  const open = await h.ctx.db.query<{ id: string; workspace_id: string }>(
+    `SELECT c.id, c.workspace_id FROM conversations c
+      WHERE c.category = 'support' AND c.latest_inbound_message_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.conversation_id = c.id AND d.inbound_message_id = c.latest_inbound_message_id)`,
+  );
+  for (const c of open.rows) {
+    await enqueue(h.ctx.db, { workspaceId: c.workspace_id, type: "case.draft", payload: { conversationId: c.id }, dedupeKey: `case.draft:${c.id}:test` });
+  }
+  await drainJobs(h.ctx, { maxJobs });
+}
+
+/** Run a mailbox sync through the job queue and process everything that follows (enrich, then the requested drafts). */
 export async function syncAndDrain(h: Harness, s: SeededWorkspace): Promise<void> {
   await enqueue(h.ctx.db, { workspaceId: s.workspaceId, type: "mail.sync", payload: { connectionId: s.connectionId }, dedupeKey: `mail.sync:${s.connectionId}` });
-  await drainJobs(h.ctx, { maxJobs: 500 });
+  await drainWithDrafts(h);
 }
 
 export async function caseByThread(h: Harness, s: SeededWorkspace, threadKey: string) {

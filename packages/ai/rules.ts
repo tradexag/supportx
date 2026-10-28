@@ -39,6 +39,27 @@ export class RulesProvider implements AiProvider {
       );
       missing.push(input.orderStatus === "ambiguous" ? "Bestellung nicht eindeutig: mehrere passende Aufträge" : "Bestellnummer bzw. passende Bestellung");
       actions.push("ask_customer");
+    } else if (input.decision === "customer_right") {
+      fact("order");
+      lines.push("vielen Dank für Ihre Nachricht und entschuldigen Sie bitte die Unannehmlichkeiten. Sie haben recht, das hätte nicht passieren dürfen.");
+      lines.push("Wir kümmern uns umgehend um eine Lösung und melden uns dazu in Kürze bei Ihnen.");
+      actions.push(intent === "wrong_item" || intent === "damaged_item" ? "propose_replacement" : "none");
+    } else if (input.decision === "customer_wrong") {
+      fact("order");
+      const items = input.facts.filter((f) => /^line\.\d+$/.test(f.id));
+      items.forEach((f) => cited.push(f.id));
+      lines.push("vielen Dank für Ihre Nachricht. Wir haben Ihre Bestellung sorgfältig geprüft.");
+      if (items.length) {
+        lines.push("Laut unserem System umfasst Ihre Bestellung:");
+        items.forEach((f) => lines.push(`- ${f.text.replace(/^Position \d+: /, "").replace(/, davon laut ERP versendet: \d+/, "")}`));
+      }
+      lines.push("Sollten Sie dennoch etwas anderes erhalten haben, senden Sie uns gern ein Foto des Artikels und des Versandetiketts. Dann sehen wir uns das noch einmal genau an.");
+    } else if (input.decision === "ask_customer") {
+      fact("order");
+      lines.push("vielen Dank für Ihre Nachricht. Damit wir Ihnen schnell weiterhelfen können, senden Sie uns bitte ein Foto des erhaltenen Artikels und des Versandetiketts.");
+      lines.push("Sobald wir die Fotos haben, melden wir uns mit einer Lösung bei Ihnen.");
+      actions.push("ask_customer");
+      missing.push("Fotos des Kunden");
     } else if (intent === "parcel_status") {
       lines.push("vielen Dank für Ihre Nachricht. Zu Ihrer Bestellung liegen uns folgende Informationen vor:");
       fact("order");

@@ -76,11 +76,15 @@ describe("HTTP API: authentication, CSRF and workspace isolation", () => {
     const seen: string[] = [];
     const original = h.ctx.ai.propose.bind(h.ctx.ai);
     h.ctx.ai = { ...h.ctx.ai, id: h.ctx.ai.id, model: h.ctx.ai.model, promptVersion: h.ctx.ai.promptVersion, propose: async (input) => { seen.push(JSON.stringify(input)); return original(input); } };
-    const res = await app.inject({ method: "POST", url: `/api/w/${a.workspaceId}/cases/${caseA}/redraft`, headers: { cookie: cookieA, "x-supportx-request": "1" } });
+    const url = `/api/w/${a.workspaceId}/cases/${caseA}/redraft`;
+    const headers = { cookie: cookieA, "x-supportx-request": "1" };
+    assert.equal((await app.inject({ method: "POST", url, headers })).statusCode, 400, "no reply without a decision");
+    const res = await app.inject({ method: "POST", url, headers, payload: { decision: "customer_right" } });
     assert.equal(res.statusCode, 200);
     const { drainJobs } = await import("../../packages/services/worker.ts");
     await drainJobs(h.ctx);
     assert.ok(seen.length > 0);
+    assert.ok(seen.every((s) => s.includes('"decision":"customer_right"')), "the decision reaches the writer");
     assert.ok(seen.every((s) => !s.includes("INTERN: Kunde ist schwierig")));
   });
 

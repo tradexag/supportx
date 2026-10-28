@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AiProvider, Proposal, ProposalInput } from "../core/contracts.ts";
+import type { AiProvider, PolishInput, Proposal, ProposalInput } from "../core/contracts.ts";
 import { parseProposal, proposalJsonSchema } from "./proposal-schema.ts";
-import { PROMPT_VERSION, renderCaseInput, SYSTEM_PROMPT } from "./prompt.ts";
+import { POLISH_PROMPT, PROMPT_VERSION, renderCaseInput, renderPolishInput, SYSTEM_PROMPT } from "./prompt.ts";
 
 export interface ClaudeConfig {
   apiKey: string;
@@ -56,14 +56,7 @@ export class ClaudeProvider implements AiProvider {
           : {}),
       });
     } catch (error) {
-      if (error instanceof Anthropic.RateLimitError || error instanceof Anthropic.InternalServerError || error instanceof Anthropic.APIConnectionError) {
-        throw new AiProviderError(`Claude vorübergehend nicht erreichbar: ${error.message}`, true);
-      }
-      if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
-        throw new AiProviderError("Claude-Zugang abgelehnt. API-Schlüssel prüfen.", false);
-      }
-      if (error instanceof Anthropic.APIError) throw new AiProviderError(`Claude-Fehler ${error.status}: ${error.message}`, false);
-      throw new AiProviderError((error as Error).message, true);
+      throw providerError(error);
     }
     if (response.stop_reason === "refusal") {
       throw new AiProviderError("Claude hat die Anfrage abgelehnt. Bitte manuell bearbeiten.", false);
@@ -78,6 +71,37 @@ export class ClaudeProvider implements AiProvider {
       throw new AiProviderError(`Claude-Antwort entspricht nicht dem Schema: ${(error as Error).message.slice(0, 300)}`, true);
     }
   }
+
+  /** Friendlier wording of the agent's own text. Plain text out; the server checks it like any edit. */
+  async polish(input: PolishInput): Promise<string> {
+    let response;
+    try {
+      response = await this.#client.messages.create({
+        model: this.#config.model,
+        max_tokens: 4000,
+        output_config: { effort: "low" },
+        system: POLISH_PROMPT,
+        messages: [{ role: "user", content: renderPolishInput(input) }],
+      });
+    } catch (error) {
+      throw providerError(error);
+    }
+    if (response.stop_reason === "refusal") throw new AiProviderError("Claude hat die Anfrage abgelehnt.", false);
+    const text = response.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("").trim();
+    if (!text) throw new AiProviderError("Claude hat keinen Text geliefert.", true);
+    return text;
+  }
+}
+
+function providerError(error: unknown): AiProviderError {
+  if (error instanceof Anthropic.RateLimitError || error instanceof Anthropic.InternalServerError || error instanceof Anthropic.APIConnectionError) {
+    return new AiProviderError(`Claude vorübergehend nicht erreichbar: ${error.message}`, true);
+  }
+  if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
+    return new AiProviderError("Claude-Zugang abgelehnt. API-Schlüssel prüfen.", false);
+  }
+  if (error instanceof Anthropic.APIError) return new AiProviderError(`Claude-Fehler ${error.status}: ${error.message}`, false);
+  return new AiProviderError((error as Error).message, true);
 }
 
 /**

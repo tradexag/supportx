@@ -12,7 +12,7 @@ interface Fact { id: string; text: string; source: string; observedAt?: string }
 interface Draft {
   id: string; version: number; status: string; intent: string; summary: string; body: string;
   cited_fact_ids: string[]; facts: Fact[]; missing_information: string[]; suggested_actions: string[]; risks: string[];
-  issues: Issue[]; generated_by: string; ai_model: string | null; prompt_version: string | null; created_at: string; updated_at: string;
+  issues: Issue[]; decision: string | null; generated_by: string; ai_model: string | null; prompt_version: string | null; created_at: string; updated_at: string;
 }
 interface Parcel { id?: string; trackingId?: string; trackingUrl?: string; carrierId?: string; source: string }
 interface Shipment {
@@ -41,6 +41,8 @@ interface CaseData {
   accounts: Array<{ id: string; name: string; platform: string }>;
   members: Array<{ id: string; display_name: string }>;
   send: { allowed: boolean; blockers: string[] };
+  titleHints?: string[];
+  writer?: "own_key" | "installation" | "rules";
 }
 
 const KIND_LABEL: Record<string, string> = { customer: "Kunde", echo: "unsere Antwort", manual_external: "außerhalb gesendet", platform_notice: "Systemhinweis" };
@@ -89,7 +91,7 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
 
   const sender = data.messages.find((m) => m.direction === "inbound")?.from_address ?? c.customer_address ?? "";
   const setCategory = (category: "support" | "info", remember: "none" | "address" | "domain") =>
-    act(() => api("POST", `${base}/cases/${caseId}/category`, { category, remember }), category === "info" ? "Als Werbung/Info eingeordnet." : "Als Kundenanfrage eingeordnet. Bestellung und Entwurf werden vorbereitet.");
+    act(() => api("POST", `${base}/cases/${caseId}/category`, { category, remember }), category === "info" ? "Als Werbung/Info eingeordnet." : "Als Kundenanfrage eingeordnet. Die Bestellung wird gesucht.");
 
   const timeline = [
     ...data.messages.map((m) => ({ ...m, from_case: null as string | null })),
@@ -160,12 +162,16 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
 
           <section className="card">
             <h3>Antwort</h3>
-            {!draft ? (
-              <div className="row wrap">
-                <p className="muted">Kein offener Entwurf. {c.order_match_status === "pending" ? "Die Bestellung wird noch gesucht." : ""}</p>
-                {canEdit && <button className="primary" onClick={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}>Entwurf erzeugen</button>}
-              </div>
-            ) : (
+            {canEdit && (
+              <Decision
+                current={draft?.decision ?? null}
+                hasDraft={!!draft}
+                writer={data.writer ?? "rules"}
+                pendingOrder={c.order_match_status === "pending"}
+                onDecide={(decision) => act(() => api("POST", `${base}/cases/${caseId}/redraft`, { decision }), "Die Antwort wird geschrieben. Sie erscheint hier in wenigen Sekunden.")}
+              />
+            )}
+            {!draft ? null : (
               <DraftEditor
                 key={`${draft.id}:${draft.version}`}
                 draft={draft}
@@ -176,7 +182,8 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 onApprove={(ack) => act(() => api("POST", `${base}/drafts/${draft.id}/approve`, { expectedVersion: draft.version, acknowledgeWarnings: ack }), "Freigegeben.")}
                 onSend={(approvalId) => act(() => api("POST", `${base}/approvals/${approvalId}/send`), "In den Postausgang gestellt.")}
                 onDiscard={() => act(() => api("POST", `${base}/drafts/${draft.id}/discard`))}
-                onRedraft={() => act(() => api("POST", `${base}/cases/${caseId}/redraft`), "Neuer Entwurf angefordert.")}
+                canPolish={(data.writer ?? "rules") !== "rules"}
+                onPolish={(body) => act(() => api("POST", `${base}/drafts/${draft.id}/polish`, { body, expectedVersion: draft.version }), "Neu formuliert und gespeichert. Bitte noch einmal lesen.")}
               />
             )}
             {data.outbox.length > 0 && (
@@ -247,6 +254,13 @@ function Concern({ data, draft }: { data: CaseData; draft: Draft | null }) {
       </div>
       {aiSummary && <p>{aiSummary}</p>}
       {words && <blockquote>{shortText(words, 600)}</blockquote>}
+      {(data.titleHints?.length ?? 0) > 0 && (
+        <div className="title-hint">
+          <strong>Mögliche Falschlieferung oder falsche Artikelzuordnung</strong>
+          <ul>{data.titleHints!.map((h) => <li key={h}>{h}</li>)}</ul>
+          <p className="small muted">Bitte den Titel der Bestellung auf dem Marktplatz mit dem Artikel in weclapp vergleichen.</p>
+        </div>
+      )}
     </section>
   );
 }
@@ -402,13 +416,38 @@ function OrderDetails({ order, links }: { order: OrderSnapshot; links: OrderLink
   );
 }
 
+const DECISION_LABEL: Record<string, string> = { customer_right: "Kunde hat recht", customer_wrong: "Kunde hat nicht recht", ask_customer: "Erst nachfragen" };
+const WRITER_NOTE: Record<string, string> = {
+  own_key: "Die Antwort schreibt Claude über euren Schlüssel. Jeder Klick kostet Claude-Guthaben.",
+  installation: "Die Antwort schreibt Claude. Jeder Klick kostet Claude-Guthaben.",
+  rules: "Die Antwort kommt aus einer Vorlage, ohne KI-Kosten.",
+};
+
+/** First a person decides, then the reply is written: nothing is generated (or paid for) on its own. */
+function Decision({ current, hasDraft, writer, pendingOrder, onDecide }: {
+  current: string | null; hasDraft: boolean; writer: string; pendingOrder: boolean; onDecide: (decision: string) => void;
+}) {
+  return (
+    <div className="decision">
+      <p className="small"><strong>{hasDraft ? "Andere Entscheidung? Dann wird die Antwort neu geschrieben." : "Erst entscheiden, dann wird die Antwort geschrieben."}</strong>{pendingOrder ? " Die Bestellung wird noch gesucht." : ""}</p>
+      <div className="row wrap">
+        {Object.entries(DECISION_LABEL).map(([key, label]) => (
+          <button key={key} className={current === key ? "primary" : key === "customer_right" && !hasDraft ? "primary" : ""} onClick={() => onDecide(key)}>{label}</button>
+        ))}
+      </div>
+      <p className="small muted">{WRITER_NOTE[writer] ?? WRITER_NOTE.rules}</p>
+    </div>
+  );
+}
+
 function DraftEditor(props: {
   draft: Draft; canEdit: boolean; approval: CaseData["approvals"][number] | undefined; send: CaseData["send"];
-  onSave: (body: string) => void; onApprove: (ack: boolean) => void; onSend: (approvalId: string) => void; onDiscard: () => void; onRedraft: () => void;
+  onSave: (body: string) => void; onApprove: (ack: boolean) => void; onSend: (approvalId: string) => void; onDiscard: () => void; canPolish: boolean; onPolish: (body: string) => void;
 }) {
   const { draft, canEdit, approval, send } = props;
   const [body, setBody] = useState(draft.body);
   const [ack, setAck] = useState(false);
+  const [polishing, setPolishing] = useState(false);
   const dirty = body !== draft.body;
   const blocking = draft.issues.filter((i) => i.severity === "block");
   const warnings = draft.issues.filter((i) => i.severity === "warn");
@@ -416,7 +455,7 @@ function DraftEditor(props: {
     <div className="draft">
       <div className="row wrap small">
         {draft.risks.map((r) => <span key={r} className="pill warn">Achtung: {RISK_LABEL[r] ?? r}</span>)}
-        <span className="muted">Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : "von der KI"}, {fmtDate(draft.updated_at)}</span>
+        <span className="muted">{draft.decision ? `${DECISION_LABEL[draft.decision] ?? draft.decision}, ` : ""}Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : "von der KI"}{draft.status === "edited" ? ", bearbeitet" : ""}, {fmtDate(draft.updated_at)}</span>
       </div>
       <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} readOnly={!canEdit} />
       {(blocking.length > 0 || warnings.length > 0) && (
@@ -436,7 +475,7 @@ function DraftEditor(props: {
       {canEdit && (
         <div className="row wrap actions">
           {dirty && <button onClick={() => props.onSave(body)}>Änderungen speichern</button>}
-          <button className="ghost" onClick={props.onRedraft}>Neu erzeugen</button>
+          {props.canPolish && <button onClick={() => { setPolishing(true); props.onPolish(body); }} disabled={polishing || !body.trim()} title="Formuliert deinen Text freundlich und kundenorientiert (Claude, kostet Guthaben)">{polishing ? "Formuliert …" : "Freundlich formulieren"}</button>}
           <button className="ghost danger" onClick={props.onDiscard}>Verwerfen</button>
           <span className="spacer" />
           {!approval ? (

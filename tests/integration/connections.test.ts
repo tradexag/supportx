@@ -7,7 +7,7 @@ import { many, one } from "../../packages/storage/db.ts";
 import { drainJobs, scheduleTick } from "../../packages/services/worker.ts";
 import { caseCounts, listCases, setCaseCategory } from "../../packages/services/cases.ts";
 import { recategorizeAutoCases } from "../../packages/services/ingestion.ts";
-import { caseByThread, closeDb, createHarness, currentDraft, loadDemoMails, seedWorkspace, syncAndDrain, type Harness } from "./harness.ts";
+import { caseByThread, closeDb, createHarness, currentDraft, drainWithDrafts, loadDemoMails, seedWorkspace, syncAndDrain, type Harness } from "./harness.ts";
 
 let h: Harness | null = null;
 afterEach(async () => {
@@ -121,7 +121,7 @@ describe("advertising detection", () => {
 
     await rejectsWith(setCaseCategory(h.ctx, s.viewer, promo.id, { category: "support" }), "FORBIDDEN");
     await setCaseCategory(h.ctx, s.agent, promo.id, { category: "support", remember: "domain" });
-    await drainJobs(h.ctx, { maxJobs: 50 });
+    await drainWithDrafts(h, 50);
     assert.ok(await currentDraft(h, s, promo.id), "draft after turning it into a request");
 
     h.graph.addInbound({ from: "news@partner-shop.example.invalid", subject: "Webinar", body: "Liebe Partner, Webinar am Montag.", conversationId: "promo-2" });
@@ -138,7 +138,7 @@ describe("advertising detection", () => {
     // Simulate data from before the update: filed as a request with a draft.
     await setCaseCategory(h.ctx, s.agent, id, { category: "support" });
     await h.ctx.db.query("UPDATE conversations SET category_source = 'auto' WHERE id = $1", [id]);
-    await drainJobs(h.ctx, { maxJobs: 50 });
+    await drainWithDrafts(h, 50);
     assert.ok(await currentDraft(h, s, id));
     const result = await recategorizeAutoCases(h.ctx.db);
     assert.ok(result.info >= 1);

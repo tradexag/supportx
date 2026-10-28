@@ -4,6 +4,7 @@ import type { AppContext } from "./context.ts";
 import { runMailSync } from "./ingestion.ts";
 import { claimJob, completeJob, enqueue, failJob, type JobRow } from "./jobs.ts";
 import { enrichConversation, RetryableError } from "./matching.ts";
+import type { ReplyDecision } from "../core/contracts.ts";
 import { DispatchRetry, dispatchOutbox, generateDraft, reconcileOutbox, sweepStaleDispatches } from "./replies.ts";
 import { HttpError } from "../connectors/http.ts";
 import { GraphMailChannel } from "../connectors/microsoft/graph-mail.ts";
@@ -52,7 +53,7 @@ export async function runJob(ctx: AppContext, job: JobRow): Promise<void> {
       await enrichConversation(ctx, ws, p.conversationId!);
       return;
     case "case.draft":
-      await generateDraft(ctx, ws, p.conversationId!);
+      await generateDraft(ctx, ws, p.conversationId!, p.decision as ReplyDecision | undefined);
       return;
     case "outbox.dispatch":
       await dispatchOutbox(ctx, ws, p.outboxId!);
