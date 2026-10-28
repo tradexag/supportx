@@ -50,6 +50,13 @@ const KIND_LABEL: Record<string, string> = { customer: "Kunde", echo: "unsere An
 const RISK_LABEL: Record<string, string> = { health: "Gesundheitsfrage", legal: "Rechtliches", refund: "Erstattung", replacement: "Ersatz", cancellation: "Storno", delivery_disputed: "Zustellung bestritten", identity_uncertain: "Identität unklar", abusive: "beleidigend", other: "Sonstiges" };
 const ACTION_LABEL: Record<string, string> = { none: "keine", ask_customer: "Kunde fragen", check_return_label: "Retourenlabel prüfen", propose_replacement: "Ersatz prüfen (eigener Ablauf)", propose_refund: "Erstattung prüfen (eigener Ablauf)", escalate: "eskalieren" };
 
+/** Red, yellow, green: what still needs us, what waits for someone else, what is done. */
+const CASE_STATUS = [
+  { value: "open", label: "Offen" },
+  { value: "waiting", label: "Wartet" },
+  { value: "closed", label: "Erledigt" },
+] as const;
+
 export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId: string; caseId: string; role: Role; onChanged: () => void }) {
   const [data, setData] = useState<CaseData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,13 +144,16 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
         </div>
         {canEdit && (
           <div className="controls">
-            <label className="field"><span>Status</span>
-              <select value={c.status} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/status`, { status: e.target.value }))}>
-                <option value="open">offen</option>
-                <option value="waiting">wartet</option>
-                <option value="closed">erledigt</option>
-              </select>
-            </label>
+            <div className="field"><span id="case-status-label">Status</span>
+              <div className="status-buttons" role="group" aria-labelledby="case-status-label">
+                {CASE_STATUS.map((st) => (
+                  <button key={st.value} className={`status-${st.value}${c.status === st.value ? " active" : ""}`} aria-pressed={c.status === st.value}
+                    onClick={() => c.status !== st.value && act(() => api("POST", `${base}/cases/${caseId}/status`, { status: st.value }))}>
+                    <i aria-hidden="true" />{st.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="field"><span>Zuständig</span>
               <select value={c.assignee_user_id ?? ""} onChange={(e) => act(() => api("POST", `${base}/cases/${caseId}/assign`, { userId: e.target.value || null }))}>
                 <option value="">niemand</option>

@@ -46,7 +46,11 @@ export function orderLinks(input: OrderLinkInput): OrderLink[] {
   const platforms = new Set(input.platforms.filter(Boolean));
   const amazon = numbers.find((n) => AMAZON_ORDER.test(n));
   const ebay = numbers.find((n) => EBAY_ORDER.test(n));
-  if (amazon) links.push({ label: "Bestellung in Seller Central", href: `https://sellercentral.amazon.de/orders-v3/order/${amazon}` });
+  if (amazon) {
+    links.push({ label: "Bestellung in Seller Central", href: `https://sellercentral.amazon.de/orders-v3/order/${amazon}` });
+    // Opens Amazon's refund form for this order; the refund itself is done there by a person.
+    links.push({ label: "Bestellung erstatten", href: `https://sellercentral.amazon.de/gp/orders-v2/refund?orderID=${amazon}` });
+  }
   else if (ebay) links.push({ label: "Bestellung bei eBay", href: `https://www.ebay.de/sh/ord/details?orderid=${ebay}` });
   else if (platforms.has("shop_apotheke") && order.orderNumberAtCustomer) {
     const mirakl = origin(input.miraklBaseUrl);

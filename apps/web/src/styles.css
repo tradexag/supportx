@@ -221,3 +221,16 @@ a.button:hover { background: var(--text); color: var(--card); }
 .file-chip { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 8px; background: var(--card); max-width: 100%; }
 .file-chip a { overflow-wrap: anywhere; }
 .draft-files select { min-height: 30px; }
+/* Case status as three buttons: open = red, waiting = yellow, done = green. */
+.status-buttons { display: inline-flex; }
+.status-buttons button { --st: var(--bad); border-color: var(--line); border-radius: 0; min-height: 36px; padding: 0 14px; font-weight: 500; }
+.status-buttons button + button { border-left: none; }
+.status-buttons button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.status-buttons button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.status-buttons button i { width: 8px; height: 8px; border-radius: 50%; background: var(--st); flex: none; }
+.status-buttons .status-waiting { --st: #e0a800; }
+.status-buttons .status-closed { --st: var(--ok); }
+.status-buttons button.active { background: var(--st); border-color: var(--st); color: #fff; }
+.status-buttons button.active i { background: currentColor; }
+.status-buttons .status-waiting.active { color: #111111; }
+.status-buttons button.active:hover:not(:disabled) { background: var(--st); }

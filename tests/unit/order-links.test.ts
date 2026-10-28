@@ -4,7 +4,7 @@ import { orderLinks } from "../../apps/web/src/order-links.ts";
 
 test("Amazon and eBay order numbers link to the order on the marketplace", () => {
   const amazon = orderLinks({ order: { id: "1", orderNumber: "028-0960602-3405919" }, platforms: ["email"] });
-  assert.deepEqual(amazon.map((l) => l.href), ["https://sellercentral.amazon.de/orders-v3/order/028-0960602-3405919"]);
+  assert.deepEqual(amazon.map((l) => l.href), ["https://sellercentral.amazon.de/orders-v3/order/028-0960602-3405919", "https://sellercentral.amazon.de/gp/orders-v2/refund?orderID=028-0960602-3405919"]);
   const ebay = orderLinks({ order: { id: "2", orderNumber: "AU-1", orderNumberAtCustomer: "12-34567-89012" }, platforms: ["ebay"] });
   assert.deepEqual(ebay.map((l) => l.href), ["https://www.ebay.de/sh/ord/details?orderid=12-34567-89012"]);
 });
