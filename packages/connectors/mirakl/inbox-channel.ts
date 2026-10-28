@@ -164,6 +164,8 @@ export class MiraklInboxChannel implements MessageChannel {
     try {
       const form = new FormData();
       form.set("message_input", new Blob([JSON.stringify({ body: request.bodyText, to })], { type: "application/json" }));
+      // M12 takes files as further multipart parts named "files".
+      for (const a of request.attachments ?? []) form.append("files", new Blob([new Uint8Array(a.data)], { type: a.contentType }), a.name);
       const res = await this.#call("POST", `/api/inbox/threads/${encodeURIComponent(id)}/message`, {}, form);
       return { state: "provider_accepted", externalMessageId: typeof res?.message_id === "string" ? res.message_id : undefined };
     } catch (error) {

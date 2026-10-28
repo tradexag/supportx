@@ -33,7 +33,7 @@ export interface FakeGraph {
   authorityHost: string;
   mailbox: string;
   messages: FakeMail[];
-  replies: Array<{ inReplyTo: string; comment: string; headers: Array<{ name: string; value: string }> }>;
+  replies: Array<{ inReplyTo: string; comment: string; headers: Array<{ name: string; value: string }>; attachments: Array<{ name: string; contentType: string; contentBytes: string }> }>;
   addInbound(input: { from: string; fromName?: string; subject: string; body: string; conversationId?: string; replyTo?: string; receivedAt?: Date; internetMessageId?: string; id?: string; attachments?: FakeMail["attachments"] }): FakeMail;
   addSent(input: { to: string; subject: string; body: string; conversationId: string; headers?: Array<{ name: string; value: string }> }): FakeMail;
   setReplyFault(fault: ReplyFault): void;
@@ -182,7 +182,7 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
     if (req.method === "POST" && reply) {
       const original = messages.find((m) => m.id === decodeURIComponent(reply[1]!));
       if (!original) return send(404, { error: { code: "ErrorItemNotFound", message: "Not found" } });
-      const payload = JSON.parse(raw || "{}") as { comment?: string; message?: { internetMessageHeaders?: Array<{ name: string; value: string }> } };
+      const payload = JSON.parse(raw || "{}") as { comment?: string; message?: { internetMessageHeaders?: Array<{ name: string; value: string }>; attachments?: Array<{ name: string; contentType: string; contentBytes: string }> } };
       const current = fault;
       fault = "none";
       if (current === "reject_400") return send(400, { error: { code: "ErrorInvalidRecipients", message: "Simulated rejection." } });
@@ -190,7 +190,7 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
       if (current === "throttle_429") return send(429, { error: { code: "ApplicationThrottled", message: "Simulated throttling." } });
       if (current === "timeout_before_send") return void setTimeout(() => send(504), opts.hangMs ?? 3000);
       const recipient = original.replyTo[0]?.address ?? original.from.address;
-      replies.push({ inReplyTo: original.id, comment: payload.comment ?? "", headers: payload.message?.internetMessageHeaders ?? [] });
+      replies.push({ inReplyTo: original.id, comment: payload.comment ?? "", headers: payload.message?.internetMessageHeaders ?? [], attachments: payload.message?.attachments ?? [] });
       addSent({ to: recipient, subject: `AW: ${original.subject}`, body: payload.comment ?? "", conversationId: original.conversationId, headers: payload.message?.internetMessageHeaders });
       if (current === "timeout_after_send") return void setTimeout(() => send(202), opts.hangMs ?? 3000);
       if (current === "server_error_after_send") return send(503, { error: { code: "ServiceUnavailable", message: "Simulated." } });

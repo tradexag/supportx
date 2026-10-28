@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { categorizeMail } from "../../packages/core/category.ts";
+import { OWN_COPY_REASON, categorizeMail } from "../../packages/core/category.ts";
 
 const mail = (over: Partial<Parameters<typeof categorizeMail>[0]> = {}) => ({
   from: { address: "kunde@example.invalid" }, subject: "Frage", bodyText: "Hallo", headers: {}, hasOrderReference: false, ...over,
@@ -37,5 +37,19 @@ describe("request or advertising", () => {
     const d = categorizeMail(mail({ from: { address: "support@shop.example.invalid" }, bodyText: "Liebe Partner, Webinar" }), rules);
     assert.equal(d.category, "support");
     assert.equal(d.source, "rule");
+  });
+});
+
+describe("own copies from Amazon", () => {
+  const amazon = { address: "donotreply@amazon.com", name: "Amazon.de" };
+  it("sorts out the copy of a message we sent, even with an order number in it", () => {
+    const d = categorizeMail({ from: amazon, subject: "Deine E-Mail an Sevinc", bodyText: "[Amazon.com] Sehr geehrte(r) Auwald Bio,\nHier ist eine Kopie der E-Mail, die du an Sevinc gesendet hast.\nBestellnummer 303-7978499-5468368", headers: {}, hasOrderReference: true });
+    assert.equal(d.category, "info");
+    assert.equal(d.reason, OWN_COPY_REASON);
+    assert.equal(categorizeMail({ from: amazon, subject: "Your e-mail to Max", bodyText: "Here is a copy of the e-mail you sent to Max.", headers: {}, hasOrderReference: true }).category, "info");
+  });
+  it("keeps a real buyer message a request", () => {
+    const d = categorizeMail({ from: { address: "kunde@marketplace.amazon.de" }, subject: "Frage zur Bestellung", bodyText: "Ich habe eine Kopie der Rechnung gebraucht, die Sie mir gesendet haben.", headers: {}, hasOrderReference: true });
+    assert.equal(d.category, "support");
   });
 });

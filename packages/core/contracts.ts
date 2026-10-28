@@ -85,6 +85,14 @@ export interface ReplyRequest {
   bodyText: string;
   /** Local outbox id, embedded so a later reconciliation can find the sent copy. */
   outboxMarker: string;
+  /** Files approved together with the text (PDFs from the workspace documents). */
+  attachments?: ReplyAttachment[];
+}
+
+export interface ReplyAttachment {
+  name: string;
+  contentType: string;
+  data: Buffer;
 }
 
 export type ReplyOutcome =

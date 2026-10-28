@@ -176,7 +176,12 @@ export class KauflandTicketsChannel implements MessageChannel {
     }
     try {
       // interim_notice=false: a normal, customer-visible answer that hands the ticket back to the buyer.
-      await this.#call("POST", `/tickets/${encodeURIComponent(ticketId)}/messages`, {}, { text: request.bodyText, interim_notice: false });
+      await this.#call("POST", `/tickets/${encodeURIComponent(ticketId)}/messages`, {}, {
+        text: request.bodyText,
+        interim_notice: false,
+        // Documented as name, MIME type and base64 data (example uses a data URI).
+        ...(request.attachments?.length ? { ticket_message_files: request.attachments.map((a) => ({ filename: a.name, mime_type: a.contentType, data: `data:${a.contentType};base64,${a.data.toString("base64")}` })) } : {}),
+      });
       return { state: "provider_accepted" };
     } catch (error) {
       return sendFailure(error);

@@ -135,6 +135,13 @@ describe("eBay OAuth and message channel (contract against test double)", () => 
     assert.equal(again.messages.find((m) => m.bodyText === "Ja, kaltgepresst.")!.direction, "outbound");
   });
 
+  it("refuses files instead of sending the text without them", async () => {
+    const before = fake.sent.length;
+    const out = await channel().sendReply({ inReplyToExternalId: "m1", externalThreadKey: "ebay:conversation:C1", bodyText: "Anbei.", outboxMarker: "ob", attachments: [{ name: "a.pdf", contentType: "application/pdf", data: Buffer.from("%PDF-") }] });
+    assert.equal(out.state, "rejected");
+    assert.equal(fake.sent.length, before);
+  });
+
   it("refuses to start without consent", () => {
     assert.throws(() => new EbayMessageChannel({ ...app(), refreshToken: "", grantedScopes: [], sellerUsername: "", allowTestEndpoints: true }), /nicht verbunden/);
   });
@@ -164,6 +171,13 @@ describe("Mirakl inbox channel (contract against test double)", () => {
     const out = await channel().sendReply({ inReplyToExternalId: msgId, externalThreadKey: "mirakl:thread:th-1", bodyText: "Morgen.", outboxMarker: "ob" });
     assert.equal(out.state, "provider_accepted");
     assert.deepEqual(fake.replies.at(-1)!.to, [{ type: "CUSTOMER", id: "c-77" }]);
+  });
+
+  it("sends approved PDFs as multipart files", async () => {
+    const msgId = fake.threads[0]!.messages[0]!.id;
+    const out = await channel().sendReply({ inReplyToExternalId: msgId, externalThreadKey: "mirakl:thread:th-1", bodyText: "Anleitung anbei.", outboxMarker: "ob", attachments: [{ name: "Retouren.pdf", contentType: "application/pdf", data: Buffer.from("%PDF-1.4 x") }] });
+    assert.equal(out.state, "provider_accepted");
+    assert.deepEqual(fake.replies.at(-1)!.files, [{ name: "Retouren.pdf", type: "application/pdf", size: 10 }]);
   });
 
   it("answers an operator message to the operator, never to the customer", async () => {

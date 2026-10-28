@@ -166,6 +166,8 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 
       <WorkspaceForm data={data} owner={owner} onSave={(body) => act(() => api("PUT", `${base}/settings`, body), () => "Gespeichert.")} />
 
+      <DocumentsCard base={base} owner={owner} />
+
       <DesignCard base={base} owner={owner} />
 
       <AiKeyCard
@@ -591,6 +593,72 @@ function DesignCard({ base, owner }: { base: string; owner: boolean }) {
       )}
       {message && <p className={message.ok ? "small ok-text" : "small error"} role="status">{message.text}</p>}
       <p className="muted small">Gilt für alle in diesem Arbeitsbereich, sobald sie die Seite neu laden.</p>
+    </section>
+  );
+}
+
+interface DocumentRow { id: string; name: string; size: number; created_at: string }
+const MAX_PDF = 3 * 1024 * 1024;
+const fmtSize = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(new Error("Die Datei konnte nicht gelesen werden."));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** PDFs kept ready to attach to replies, e.g. the return instructions. */
+function DocumentsCard({ base, owner }: { base: string; owner: boolean }) {
+  const [docs, setDocs] = useState<DocumentRow[] | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = useCallback(async () => {
+    const r = await api<{ documents: DocumentRow[] }>("GET", `${base}/documents`).catch(() => ({ documents: [] }));
+    setDocs(r.documents);
+  }, [base]);
+  useEffect(() => void reload(), [reload]);
+  const run = async (fn: () => Promise<string>) => {
+    setBusy(true);
+    setMessage(null);
+    try { setMessage({ ok: true, text: await fn() }); await reload(); } catch (err) { setMessage({ ok: false, text: (err as Error).message }); } finally { setBusy(false); }
+  };
+  const onFile = (file: File | undefined) => {
+    if (!file) return;
+    if (file.type && file.type !== "application/pdf") return setMessage({ ok: false, text: "Bitte nur PDF-Dateien hochladen." });
+    if (file.size > MAX_PDF) return setMessage({ ok: false, text: `Die PDF ist zu groß (${fmtSize(file.size)}, höchstens 3 MB). Bitte verkleinern, z. B. beim Export „für Web“ wählen.` });
+    void run(async () => {
+      await api("POST", `${base}/documents`, { name: file.name, dataBase64: await readBase64(file) });
+      return `${file.name} hinterlegt. Du kannst sie jetzt an Antworten hängen.`;
+    });
+  };
+  const count = docs?.length ?? 0;
+  return (
+    <section className="card">
+      <h3>Dokumente</h3>
+      <p className="muted small">{count === 0 ? "Noch keine PDFs" : `${count} ${count === 1 ? "PDF" : "PDFs"} hinterlegt`}</p>
+      <p className="muted small">PDFs, die ihr oft mitschickt, z. B. die Anleitung für Retouren. Im Fall wählst du sie unter der Antwort mit „PDF anhängen“. Nur PDF, höchstens 3 MB je Datei und je Antwort.</p>
+      {docs && docs.length > 0 && (
+        <ul className="doc-list">
+          {docs.map((d) => (
+            <li key={d.id}>
+              <a href={`${base}/documents/${d.id}`} download>{d.name}</a>
+              <span className="muted small">{fmtSize(d.size)}</span>
+              {owner && <button className="link" disabled={busy} onClick={() => { if (window.confirm(`„${d.name}“ aus der Liste entfernen?\n\nBereits freigegebene Antworten schicken sie trotzdem mit.`)) void run(async () => { await api("DELETE", `${base}/documents/${d.id}`); return `${d.name} entfernt.`; }); }}>entfernen</button>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {owner && (
+        <label className="file-pick">
+          <input type="file" accept="application/pdf,.pdf" disabled={busy} onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+          <span className="button">{busy ? "Lädt hoch …" : "PDF hochladen"}</span>
+        </label>
+      )}
+      {message && <p className={message.ok ? "small ok-text" : "small error"} role="status">{message.text}</p>}
+      <p className="muted small">Bei eBay gehen keine Dateien mit, dort bitte einen Link oder den Text verwenden.</p>
     </section>
   );
 }

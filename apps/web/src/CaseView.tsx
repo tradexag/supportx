@@ -12,7 +12,7 @@ interface Fact { id: string; text: string; source: string; observedAt?: string }
 interface Draft {
   id: string; version: number; status: string; intent: string; summary: string; body: string;
   cited_fact_ids: string[]; facts: Fact[]; missing_information: string[]; suggested_actions: string[]; risks: string[];
-  issues: Issue[]; decision: string | null; generated_by: string; ai_model: string | null; prompt_version: string | null; created_at: string; updated_at: string;
+  issues: Issue[]; decision: string | null; document_ids?: string[]; generated_by: string; ai_model: string | null; prompt_version: string | null; created_at: string; updated_at: string;
 }
 interface Parcel { id?: string; trackingId?: string; trackingUrl?: string; carrierId?: string; source: string }
 interface Shipment {
@@ -43,6 +43,7 @@ interface CaseData {
   send: { allowed: boolean; blockers: string[] };
   titleHints?: string[];
   writer?: "own_key" | "installation" | "rules";
+  replyFiles?: { supported: boolean; note: string };
 }
 
 const KIND_LABEL: Record<string, string> = { customer: "Kunde", echo: "unsere Antwort", manual_external: "außerhalb gesendet", platform_notice: "Systemhinweis" };
@@ -55,6 +56,10 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
   const [notice, setNotice] = useState<string | null>(null);
   const base = `/api/w/${workspaceId}`;
   const canEdit = role !== "viewer";
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  useEffect(() => {
+    api<{ documents: DocumentInfo[] }>("GET", `${base}/documents`).then((r) => setDocuments(r.documents), () => setDocuments([]));
+  }, [base]);
 
   const load = useCallback(async () => {
     try {
@@ -186,6 +191,10 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 onDiscard={() => act(() => api("POST", `${base}/drafts/${draft.id}/discard`))}
                 canPolish={(data.writer ?? "rules") !== "rules"}
                 onPolish={(body) => act(() => api("POST", `${base}/drafts/${draft.id}/polish`, { body, expectedVersion: draft.version }), "Neu formuliert und gespeichert. Bitte noch einmal lesen.")}
+                documents={documents}
+                replyFiles={data.replyFiles ?? { supported: false, note: "" }}
+                documentBase={`${base}/documents`}
+                onDocuments={(ids) => act(() => api("PUT", `${base}/drafts/${draft.id}/documents`, { documentIds: ids, expectedVersion: draft.version }), ids.length ? "Anhang gespeichert. Bitte Antwort mit Anhang freigeben." : "Anhang entfernt.")}
               />
             )}
             {data.outbox.length > 0 && (
@@ -490,6 +499,7 @@ function Decision({ current, hasDraft, writer, pendingOrder, onDecide, onCompose
 function DraftEditor(props: {
   draft: Draft; canEdit: boolean; approval: CaseData["approvals"][number] | undefined; send: CaseData["send"];
   onSave: (body: string) => void; onApprove: (ack: boolean) => void; onSend: (approvalId: string) => void; onDiscard: () => void; canPolish: boolean; onPolish: (body: string) => void;
+  documents: DocumentInfo[]; replyFiles: { supported: boolean; note: string }; documentBase: string; onDocuments: (ids: string[]) => void;
 }) {
   const { draft, canEdit, approval, send } = props;
   const [body, setBody] = useState(draft.body);
@@ -505,6 +515,7 @@ function DraftEditor(props: {
         <span className="muted">{draft.decision ? `${DECISION_LABEL[draft.decision] ?? draft.decision}, ` : ""}Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : draft.generated_by === "person" ? "nach deiner Vorgabe" : "von der KI"}{draft.status === "edited" ? ", bearbeitet" : ""}, {fmtDate(draft.updated_at)}</span>
       </div>
       <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} readOnly={!canEdit} />
+      <DraftFiles draft={draft} canEdit={canEdit && !dirty} documents={props.documents} replyFiles={props.replyFiles} base={props.documentBase} onChange={props.onDocuments} />
       {(blocking.length > 0 || warnings.length > 0) && (
         <ul className="issues">
           {blocking.map((i, n) => <li key={`b${n}`} className="error">Blockiert: {i.message}</li>)}
@@ -545,6 +556,40 @@ function DraftEditor(props: {
           <p className="muted">Freischalten in den Einstellungen auf der Karte des Marktplatzes. Bis dahin den Text kopieren und im Marktplatz selbst senden.</p>
         </div>
       )}
+    </div>
+  );
+}
+
+interface DocumentInfo { id: string; name: string; size: number }
+
+const fmtSize = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+/** PDFs from the workspace documents that go out with this reply; approved together with the text. */
+function DraftFiles({ draft, canEdit, documents, replyFiles, base, onChange }: {
+  draft: Draft; canEdit: boolean; documents: DocumentInfo[]; replyFiles: { supported: boolean; note: string }; base: string; onChange: (ids: string[]) => void;
+}) {
+  const chosen = draft.document_ids ?? [];
+  const available = documents.filter((d) => !chosen.includes(d.id));
+  const nameOf = (id: string) => documents.find((d) => d.id === id)?.name ?? "Dokument (aus der Liste entfernt)";
+  if (chosen.length === 0 && documents.length === 0) return null;
+  if (!replyFiles.supported) return documents.length > 0 ? <p className="small muted draft-files">{replyFiles.note}</p> : null;
+  return (
+    <div className="draft-files small">
+      <strong>Anhang</strong>
+      {chosen.map((id) => (
+        <span key={id} className="file-chip">
+          <a href={`${base}/${id}`} download>{nameOf(id)}</a>
+          {canEdit && <button className="link" onClick={() => onChange(chosen.filter((x) => x !== id))} aria-label={`${nameOf(id)} entfernen`}>entfernen</button>}
+        </span>
+      ))}
+      {canEdit && available.length > 0 && chosen.length < 3 && (
+        <select value="" onChange={(e) => e.target.value && onChange([...chosen, e.target.value])} aria-label="PDF anhängen">
+          <option value="">PDF anhängen …</option>
+          {available.map((d) => <option key={d.id} value={d.id}>{d.name} ({fmtSize(d.size)})</option>)}
+        </select>
+      )}
+      {chosen.length === 0 && <span className="muted">kein Anhang</span>}
+      {chosen.length > 0 && <span className="muted">{replyFiles.note}</span>}
     </div>
   );
 }

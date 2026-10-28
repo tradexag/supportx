@@ -306,7 +306,11 @@ export class GraphMailChannel implements MessageChannel {
   async sendReply(request: ReplyRequest): Promise<ReplyOutcome> {
     try {
       await this.#call("POST", `${this.#mailboxPath()}/messages/${encodeURIComponent(request.inReplyToExternalId)}/reply`, {
-        message: { internetMessageHeaders: [{ name: OUTBOX_HEADER, value: request.outboxMarker }] },
+        message: {
+          internetMessageHeaders: [{ name: OUTBOX_HEADER, value: request.outboxMarker }],
+          // Small files go inline with the reply (Graph: up to about 3 MB per request).
+          ...(request.attachments?.length ? { attachments: request.attachments.map((a) => ({ "@odata.type": "#microsoft.graph.fileAttachment", name: a.name, contentType: a.contentType, contentBytes: a.data.toString("base64") })) } : {}),
+        },
         comment: textToHtml(request.bodyText),
       });
       // 202 Accepted: Exchange accepted the request. Not a delivery receipt.

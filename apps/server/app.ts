@@ -37,6 +37,7 @@ import { ServiceError, type Actor, type AppContext } from "../../packages/servic
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
 import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
+import { deleteDocument, getDocument, listDocuments, setDraftDocuments, uploadDocument } from "../../packages/services/documents.ts";
 import { previewDesign, resetDesign, saveDesign, workspaceTheme } from "../../packages/services/design.ts";
 import { approveDraft, composeDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
@@ -217,6 +218,29 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.post("/api/w/:ws/drafts/:id/polish", async (req) => {
     const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
     return polishDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  app.put("/api/w/:ws/drafts/:id/documents", async (req) => {
+    const body = parse(z.object({ documentIds: z.array(z.string()).max(10), expectedVersion: z.number().int().positive() }), req.body);
+    return setDraftDocuments(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  // Workspace PDFs (e.g. return instructions) to attach to replies.
+  app.get("/api/w/:ws/documents", async (req) => ({ documents: await listDocuments(ctx, await actor(req)) }));
+  app.post("/api/w/:ws/documents", { bodyLimit: 4_500_000 }, async (req) => {
+    const body = parse(z.object({ name: z.string().min(1).max(300), dataBase64: z.string().min(1).max(4_400_000) }), req.body);
+    return uploadDocument(ctx, await actor(req), { name: body.name, data: Buffer.from(body.dataBase64, "base64") });
+  });
+  app.delete("/api/w/:ws/documents/:id", async (req) => {
+    await deleteDocument(ctx, await actor(req), (req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.get("/api/w/:ws/documents/:id", async (req, reply) => {
+    const doc = await getDocument(ctx, await actor(req), (req.params as { id: string }).id);
+    return reply
+      .type("application/pdf")
+      .header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(doc.name)}`)
+      .header("Content-Security-Policy", "default-src 'none'; sandbox")
+      .header("Cache-Control", "private, no-store")
+      .send(doc.data);
   });
   app.post("/api/w/:ws/drafts/:id/discard", async (req) => {
     await discardDraft(ctx, await actor(req), (req.params as { id: string }).id);

@@ -213,3 +213,11 @@ a.button:hover { background: var(--text); color: var(--card); }
 .swatch { width: 16px; height: 16px; border: 1px solid var(--line); border-radius: 2px; grid-column: 1; }
 .design-found li span { grid-column: 2; }
 .ok-text { color: var(--ok); }
+/* Documents: list in settings, chosen attachments under a draft. */
+.doc-list { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.doc-list li { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.doc-list a { overflow-wrap: anywhere; }
+.draft-files { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.file-chip { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 8px; background: var(--card); max-width: 100%; }
+.file-chip a { overflow-wrap: anywhere; }
+.draft-files select { min-height: 30px; }

@@ -5,6 +5,8 @@ import { audit } from "./audit.ts";
 import { enqueue } from "./jobs.ts";
 import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
 import { aiWriter, sendBlockers, titleHintsFor } from "./replies.ts";
+import { REPLY_FILES } from "./documents.ts";
+import type { ChannelKind } from "./connections.ts";
 import type { OrderRecord } from "../core/contracts.ts";
 
 export type CaseFilter = "open" | "needs_attention" | "waiting" | "closed" | "info" | "all";
@@ -26,7 +28,7 @@ export async function listCases(ctx: AppContext, actor: Actor, filter: CaseFilte
   return many(
     ctx.db,
     `SELECT c.id, c.subject, c.status, c.category, c.category_reason, c.source_platform, c.customer_address, c.customer_name, c.order_match_status, c.last_message_at, c.last_error,
-            ma.name AS merchant_account_name, cc.display_name AS connection_name, u.display_name AS assignee_name,
+            ma.name AS merchant_account_name, cc.display_name AS connection_name, cc.kind AS connection_kind, u.display_name AS assignee_name,
             (SELECT d.status FROM drafts d WHERE d.conversation_id = c.id ORDER BY d.created_at DESC LIMIT 1) AS draft_status,
             (SELECT d.intent FROM drafts d WHERE d.conversation_id = c.id ORDER BY d.created_at DESC LIMIT 1) AS intent,
             (SELECT o.state FROM outbox o WHERE o.conversation_id = c.id ORDER BY o.created_at DESC LIMIT 1) AS outbox_state,
@@ -46,7 +48,7 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
   const ws = actor.workspaceId;
   const conversation = await one(
     ctx.db,
-    `SELECT c.*, ma.name AS merchant_account_name, cc.display_name AS connection_name, u.display_name AS assignee_name
+    `SELECT c.*, ma.name AS merchant_account_name, cc.display_name AS connection_name, cc.kind AS connection_kind, u.display_name AS assignee_name
      FROM conversations c JOIN channel_connections cc ON cc.id = c.connection_id
      LEFT JOIN merchant_accounts ma ON ma.id = c.merchant_account_id LEFT JOIN users u ON u.id = c.assignee_user_id
      WHERE c.workspace_id = $1 AND c.id = $2`,
@@ -57,7 +59,7 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
     many(ctx.db, "SELECT id, direction, kind, from_address, from_name, to_addresses, reply_to, subject, body_text, headers, has_attachments, received_at, removed_remotely_at, outbox_id FROM messages WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY received_at", [ws, conversationId]),
     many(ctx.db, "SELECT n.id, n.body, n.created_at, u.display_name AS author FROM internal_notes n JOIN users u ON u.id = n.author_user_id WHERE n.workspace_id = $1 AND n.conversation_id = $2 ORDER BY n.created_at", [ws, conversationId]),
     one(ctx.db, "SELECT id, status, references_tried, candidates, external_order_id, matched_by, linked_by, error, snapshot, retrieved_at, created_at FROM order_links WHERE workspace_id = $1 AND conversation_id = $2 AND is_current", [ws, conversationId]),
-    many(ctx.db, "SELECT id, version, status, intent, summary, body, cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision, inbound_message_id, created_at, updated_at FROM drafts WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 5", [ws, conversationId]),
+    many(ctx.db, "SELECT id, version, status, intent, summary, body, cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision, document_ids, inbound_message_id, created_at, updated_at FROM drafts WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 5", [ws, conversationId]),
     many(ctx.db, "SELECT a.id, a.draft_id, a.draft_version, a.approved_at, a.expires_at, a.invalidated_at, a.invalidation_reason, u.display_name AS approved_by FROM approvals a JOIN users u ON u.id = a.approved_by WHERE a.workspace_id = $1 AND a.conversation_id = $2 ORDER BY a.approved_at DESC LIMIT 10", [ws, conversationId]),
     many(ctx.db, "SELECT id, draft_id, state, attempts, last_error, expected_recipient, dispatched_at, created_at, updated_at FROM outbox WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC", [ws, conversationId]),
     many(ctx.db, "SELECT action, actor_type, details, created_at FROM audit_events WHERE workspace_id = $1 AND ((target_type = 'conversation' AND target_id = $2) OR target_id IN (SELECT id::text FROM drafts WHERE conversation_id = $3) OR target_id IN (SELECT id::text FROM outbox WHERE conversation_id = $3)) ORDER BY created_at DESC LIMIT 50", [ws, conversationId, conversationId]),
@@ -96,7 +98,8 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
   const latestInbound = [...(messages as Array<{ direction: string; kind: string; body_text: string }>)].reverse().find((m) => m.direction === "inbound" && m.kind === "customer");
   const titleHints = titleHintsFor(link?.status === "unique" ? link.snapshot : null, latestInbound?.body_text ?? "");
   const writer = await aiWriter(ctx, ws);
-  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets, titleHints, writer };
+  const replyFiles = REPLY_FILES[(conversation as { connection_kind: ChannelKind }).connection_kind] ?? { supported: false, note: "" };
+  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets, titleHints, writer, replyFiles };
 }
 
 /** Counts for the inbox tabs. */

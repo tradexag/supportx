@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AiProvider, AllowedFact, CaseRisk, OrderRecord, Proposal, ProposalInput, ReplyDecision, SourcePlatform } from "../core/contracts.ts";
+import type { AiProvider, AllowedFact, CaseRisk, OrderRecord, Proposal, ProposalInput, ReplyAttachment, ReplyDecision, ReplyOutcome, SourcePlatform } from "../core/contracts.ts";
 import { checkTitles } from "../core/title-check.ts";
 import { customerText } from "../core/customer-text.ts";
 import { detectRisks, newestEmailText } from "../core/classify.ts";
@@ -10,6 +10,7 @@ import { RulesProvider } from "../ai/rules.ts";
 import { many, one, withTx, type Queryable, type Tx } from "../storage/db.ts";
 import { audit } from "./audit.ts";
 import { channelFor, loadChannelConnection } from "./connections.ts";
+import { outboxAttachments } from "./documents.ts";
 import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
 import { enqueue } from "./jobs.ts";
 
@@ -37,6 +38,7 @@ interface DraftRow {
   facts: AllowedFact[];
   cited_fact_ids: string[];
   issues: DraftIssue[];
+  document_ids: string[];
 }
 
 interface WorkspaceRow {
@@ -393,9 +395,9 @@ export async function queueReply(ctx: AppContext, actor: Actor, approvalId: stri
     try {
       const row = await one<{ id: string }>(
         tx,
-        `INSERT INTO outbox (workspace_id, conversation_id, connection_id, draft_id, draft_version, approval_id, in_reply_to_message_id, idempotency_key, body, expected_recipient)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-        [actor.workspaceId, check.conv.id, check.conv.connection_id, check.draft.id, check.draft.version, approvalId, check.conv.latest_inbound_message_id, idempotencyKey(check.conv.id, check.conv.latest_inbound_message_id!), check.draft.body, expectedRecipient],
+        `INSERT INTO outbox (workspace_id, conversation_id, connection_id, draft_id, draft_version, approval_id, in_reply_to_message_id, idempotency_key, body, expected_recipient, document_ids)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::uuid[]) RETURNING id`,
+        [actor.workspaceId, check.conv.id, check.conv.connection_id, check.draft.id, check.draft.version, approvalId, check.conv.latest_inbound_message_id, idempotencyKey(check.conv.id, check.conv.latest_inbound_message_id!), check.draft.body, expectedRecipient, check.draft.document_ids ?? []],
       );
       outboxId = row!.id;
     } catch (error) {
@@ -417,6 +419,7 @@ interface OutboxRow {
   approval_id: string;
   in_reply_to_message_id: string;
   body: string;
+  document_ids: string[];
   state: string;
   attempts: number;
   dispatched_at: Date | null;
@@ -454,16 +457,24 @@ export async function dispatchOutbox(ctx: AppContext, workspaceId: string, outbo
   if (!reserved) return "skipped";
 
   const connection = await loadChannelConnection(ctx.db, workspaceId, reserved.row.connection_id);
-  let outcome;
+  let outcome: ReplyOutcome | null = null;
+  let attachments: ReplyAttachment[] = [];
   try {
-    const channel = await channelFor(ctx, ctx.db, connection);
-    outcome = await channel.sendReply({ inReplyToExternalId: reserved.inboundExternalId, externalThreadKey: reserved.threadKey, bodyText: reserved.row.body, outboxMarker: outboxId });
+    attachments = await outboxAttachments(ctx, workspaceId, reserved.row.document_ids ?? []);
+  } catch (error) {
+    // Nothing left our side yet: a clear failure, never a send without the approved files.
+    outcome = { state: "rejected", error: (error as Error).message, retryable: false };
+  }
+  try {
+    if (!outcome) outcome = await (await channelFor(ctx, ctx.db, connection)).sendReply({ inReplyToExternalId: reserved.inboundExternalId, externalThreadKey: reserved.threadKey, bodyText: reserved.row.body, outboxMarker: outboxId, ...(attachments.length ? { attachments } : {}) });
   } catch (error) {
     outcome = { state: "uncertain" as const, error: (error as Error).message };
   }
 
+  const result: ReplyOutcome = outcome;
   return withTx(ctx.db, async (tx) => {
     const actor = { type: "worker" as const, workspaceId };
+    const outcome = result;
     if (outcome.state === "provider_accepted") {
       await tx.query("UPDATE outbox SET state = 'provider_accepted', external_message_id = $3, last_error = NULL, updated_at = now() WHERE workspace_id = $1 AND id = $2 AND state = 'dispatching'", [workspaceId, outboxId, outcome.externalMessageId ?? null]);
       await tx.query("UPDATE drafts SET status = 'sent', updated_at = now() WHERE workspace_id = $1 AND id = $2", [workspaceId, reserved.row.draft_id]);

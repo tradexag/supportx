@@ -67,7 +67,7 @@ export interface FakeKaufland {
   baseUrl: string;
   tickets: FakeKauflandTicket[];
   messages: FakeKauflandMessage[];
-  posted: Array<{ ticketId: string; text: string; interim_notice: unknown }>;
+  posted: Array<{ ticketId: string; text: string; interim_notice: unknown; files: Array<{ filename: string; mime_type: string; data: string }> }>;
   requests: string[];
   addTicket(t: Omit<FakeKauflandTicket, "storefront" | "topic"> & Partial<Pick<FakeKauflandTicket, "storefront" | "topic">>): void;
   addMessage(ticketId: string, role: string, text: string, at?: Date): FakeKauflandMessage;
@@ -128,9 +128,9 @@ export async function startFakeKaufland(opts: { clientKey: string; secretKey: st
     const postMatch = /^\/tickets\/([^/]+)\/messages$/.exec(path);
     if (req.method === "POST" && postMatch) {
       const ticketId = decodeURIComponent(postMatch[1]!);
-      const parsed = JSON.parse(body) as { text: string; interim_notice?: unknown };
+      const parsed = JSON.parse(body) as { text: string; interim_notice?: unknown; ticket_message_files?: Array<{ filename: string; mime_type: string; data: string }> };
       return sendWithFault(fault, res, () => {
-        posted.push({ ticketId, text: parsed.text, interim_notice: parsed.interim_notice });
+        posted.push({ ticketId, text: parsed.text, interim_notice: parsed.interim_notice, files: parsed.ticket_message_files ?? [] });
         add(ticketId, "seller", parsed.text);
         return undefined;
       }, 201, opts.hangMs ?? 400);
@@ -281,7 +281,7 @@ export interface FakeMiraklThread {
 export interface FakeMirakl {
   baseUrl: string;
   threads: FakeMiraklThread[];
-  replies: Array<{ threadId: string; body: string; to: Array<{ type: string; id?: string }> }>;
+  replies: Array<{ threadId: string; body: string; to: Array<{ type: string; id?: string }>; files: Array<{ name: string; type: string; size: number }> }>;
   requests: string[];
   addThread(input: { id: string; topic: string; orderId: string; customerId: string; customerName: string; text: string; from?: "CUSTOMER_USER" | "OPERATOR_USER"; at?: Date; files?: Array<{ id: string; name: string; data: Buffer }> }): void;
   setSendFault(fault: SendFault): void;
@@ -326,8 +326,9 @@ export async function startFakeMirakl(opts: { apiKey: string; hangMs?: number })
       const part = form.get("message_input");
       const input = JSON.parse(typeof part === "string" ? part : await (part as Blob).text()) as { body: string; to: Array<{ type: string; id?: string }> };
       if (!input.body || !Array.isArray(input.to) || input.to.length === 0) return json(res, 400, { message: "invalid" });
+      const files = form.getAll("files").map((f) => ({ name: (f as File).name, type: (f as File).type, size: (f as File).size }));
       return sendWithFault(fault, res, () => {
-        replies.push({ threadId: t.id, body: input.body, to: input.to });
+        replies.push({ threadId: t.id, body: input.body, to: input.to, files });
         const id = `msg-${seq++}`;
         t.messages.push({ id, body: input.body, date_created: new Date().toISOString(), from: { type: "SHOP_USER", display_name: "Shop" }, to: input.to.map((r) => ({ type: r.type, display_name: r.type })) });
         t.date_updated = new Date().toISOString();

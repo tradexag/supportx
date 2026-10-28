@@ -153,6 +153,7 @@ export class EbayMessageChannel implements MessageChannel {
     } catch (error) {
       return { state: "rejected", error: (error as Error).message, retryable: false };
     }
+    if (request.attachments?.length) return { state: "rejected", error: "eBay-Nachrichten können keine hochgeladenen Dateien mitnehmen. Es wurde nichts verschickt.", retryable: false };
     try {
       // Reply inside the existing conversation; eBay derives the buyer. No new conversations from here.
       const res = await this.#call("POST", "/send_message", {}, { conversationId, messageText: request.bodyText });
