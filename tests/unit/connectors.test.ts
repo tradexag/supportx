@@ -162,6 +162,14 @@ describe("Microsoft Graph mail adapter (contract against test double)", () => {
     assert.deepEqual([outcome.state, outcome.state === "rejected" && outcome.retryable], ["rejected", false]);
   });
 
+  it("explains a missing send right (403) instead of 'access denied'", async () => {
+    const inbound = graph.messages.find((m) => m.folder === "inbox")!;
+    graph.setReplyFault("reject_403");
+    const outcome = await channel().sendReply({ inReplyToExternalId: inbound.id, externalThreadKey: "", bodyText: "Danke", outboxMarker: "ob-4" });
+    assert.equal(outcome.state, "rejected");
+    assert.match(outcome.state === "rejected" ? outcome.error : "", /Application Mail\.Send.*nichts verschickt/s);
+  });
+
   it("fails the access check with a wrong client secret", async () => {
     const bad = new GraphMailChannel({ tenantId: "00000000-0000-0000-0000-000000000000", clientId: "c", clientSecret: "wrong", mailbox: DEMO.mailbox, graphBaseUrl: graph.graphBaseUrl, authorityHost: graph.authorityHost, allowTestEndpoints: true });
     assert.equal((await bad.checkAccess()).ok, false);

@@ -26,7 +26,7 @@ export interface FakeMail {
   attachments?: Array<{ id: string; name: string; contentType: string; contentBytes: string; isInline?: boolean }>;
 }
 
-export type ReplyFault = "none" | "timeout_after_send" | "timeout_before_send" | "server_error_after_send" | "reject_400" | "throttle_429";
+export type ReplyFault = "none" | "timeout_after_send" | "timeout_before_send" | "server_error_after_send" | "reject_400" | "reject_403" | "throttle_429";
 
 export interface FakeGraph {
   graphBaseUrl: string;
@@ -186,6 +186,7 @@ export async function startFakeGraph(opts: { mailbox: string; clientSecret: stri
       const current = fault;
       fault = "none";
       if (current === "reject_400") return send(400, { error: { code: "ErrorInvalidRecipients", message: "Simulated rejection." } });
+      if (current === "reject_403") return send(403, { error: { code: "ErrorAccessDenied", message: "Access is denied. Check credentials and try again." } });
       if (current === "throttle_429") return send(429, { error: { code: "ApplicationThrottled", message: "Simulated throttling." } });
       if (current === "timeout_before_send") return void setTimeout(() => send(504), opts.hangMs ?? 3000);
       const recipient = original.replyTo[0]?.address ?? original.from.address;
