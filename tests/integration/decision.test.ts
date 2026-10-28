@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, afterEach, describe, it } from "node:test";
 import { getCase } from "../../packages/services/cases.ts";
 import type { ServiceError } from "../../packages/services/context.ts";
-import { polishDraft, requestRedraft } from "../../packages/services/replies.ts";
+import { composeDraft, polishDraft, requestRedraft } from "../../packages/services/replies.ts";
 import { drainJobs } from "../../packages/services/worker.ts";
 import { enqueue } from "../../packages/services/jobs.ts";
 import { many } from "../../packages/storage/db.ts";
@@ -64,5 +64,30 @@ describe("decision before the reply", () => {
     const saved = (await currentDraft(h, s, conv.id))!;
     assert.equal(saved.status, "edited");
     assert.equal(saved.body, result.body);
+  });
+
+  it("turns what the person typed into the reply ('Individuell')", async () => {
+    h = await createHarness();
+    const s = await seedWorkspace(h);
+    loadDemoMails(h.graph);
+    await enqueue(h.ctx.db, { workspaceId: s.workspaceId, type: "mail.sync", payload: { connectionId: s.connectionId }, dedupeKey: `mail.sync:${s.connectionId}` });
+    await drainJobs(h.ctx, { maxJobs: 500 });
+    const conv = await caseByThread(h, s, "conv-shopify-wrong");
+    await assert.rejects(composeDraft(h.ctx, s.agent, conv.id, "  "), (e: ServiceError) => e.code === "INVALID");
+    await assert.rejects(composeDraft(h.ctx, s.viewer, conv.id, "x"), (e: ServiceError) => e.code === "FORBIDDEN");
+
+    const plain = await composeDraft(h.ctx, s.agent, conv.id, "Die richtige Farbe geht heute raus.");
+    assert.equal(plain.worded, false);
+    const first = (await currentDraft(h, s, conv.id))!;
+    assert.match(first.body, /^Guten Tag,\n\nDie richtige Farbe geht heute raus\.\n\n/);
+
+    h.ctx.ai = { ...h.ctx.ai, id: "claude", model: "test", promptVersion: "t", propose: h.ctx.ai.propose.bind(h.ctx.ai), polish: async (input) => `Guten Tag,\n\nwir entschuldigen uns: ${input.text}\n\nViele Grüße` };
+    const worded = await composeDraft(h.ctx, s.agent, conv.id, "sorry, richtige Farbe geht heute raus");
+    assert.equal(worded.worded, true);
+    const draft = (await currentDraft(h, s, conv.id))!;
+    assert.equal(draft.id, worded.draftId);
+    assert.match(draft.body, /wir entschuldigen uns: sorry, richtige Farbe geht heute raus/);
+    const rows = await many<{ status: string; decision: string }>(h.ctx.db, "SELECT status, decision FROM drafts WHERE conversation_id = $1 ORDER BY created_at", [conv.id]);
+    assert.deepEqual(rows.map((r) => [r.status, r.decision]), [["superseded", "custom"], ["edited", "custom"]]);
   });
 });

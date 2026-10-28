@@ -37,7 +37,7 @@ import { ServiceError, type Actor, type AppContext } from "../../packages/servic
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
 import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
-import { approveDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
+import { approveDraft, composeDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
 const SESSION_COOKIE = "supportx_session";
 const webDist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "web", "dist");
@@ -192,6 +192,10 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.put("/api/w/:ws/drafts/:id", async (req) => {
     const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
     return editDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  app.post("/api/w/:ws/cases/:id/compose", async (req) => {
+    const body = parse(z.object({ instruction: z.string().min(1).max(5_000) }), req.body);
+    return composeDraft(ctx, await actor(req), (req.params as { id: string }).id, body.instruction);
   });
   app.post("/api/w/:ws/drafts/:id/polish", async (req) => {
     const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);

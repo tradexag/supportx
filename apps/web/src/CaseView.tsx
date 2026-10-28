@@ -170,6 +170,7 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 writer={data.writer ?? "rules"}
                 pendingOrder={c.order_match_status === "pending"}
                 onDecide={(decision) => act(() => api("POST", `${base}/cases/${caseId}/redraft`, { decision }), "Die Antwort wird geschrieben. Sie erscheint hier in wenigen Sekunden.")}
+                onCompose={(instruction) => act(() => api("POST", `${base}/cases/${caseId}/compose`, { instruction }), (data.writer ?? "rules") !== "rules" ? "Ausformuliert. Bitte noch einmal lesen und dann freigeben." : "Als Antwort übernommen. Bitte noch einmal lesen und dann freigeben.")}
               />
             )}
             {!draft ? null : (
@@ -446,7 +447,7 @@ function OrderDetails({ order, links }: { order: OrderSnapshot; links: OrderLink
   );
 }
 
-const DECISION_LABEL: Record<string, string> = { customer_right: "Kunde hat recht", customer_wrong: "Kunde hat nicht recht", ask_customer: "Erst nachfragen" };
+const DECISION_LABEL: Record<string, string> = { customer_right: "Kunde hat recht", customer_wrong: "Kunde hat nicht recht", ask_customer: "Erst nachfragen", custom: "Individuell" };
 const WRITER_NOTE: Record<string, string> = {
   own_key: "Die Antwort schreibt Claude über euren Schlüssel. Jeder Klick kostet Claude-Guthaben.",
   installation: "Die Antwort schreibt Claude. Jeder Klick kostet Claude-Guthaben.",
@@ -454,17 +455,33 @@ const WRITER_NOTE: Record<string, string> = {
 };
 
 /** First a person decides, then the reply is written: nothing is generated (or paid for) on its own. */
-function Decision({ current, hasDraft, writer, pendingOrder, onDecide }: {
-  current: string | null; hasDraft: boolean; writer: string; pendingOrder: boolean; onDecide: (decision: string) => void;
+function Decision({ current, hasDraft, writer, pendingOrder, onDecide, onCompose }: {
+  current: string | null; hasDraft: boolean; writer: string; pendingOrder: boolean; onDecide: (decision: string) => void; onCompose: (instruction: string) => void;
 }) {
+  const [custom, setCustom] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ai = writer !== "rules";
   return (
     <div className="decision">
       <p className="small"><strong>{hasDraft ? "Andere Entscheidung? Dann wird die Antwort neu geschrieben." : "Erst entscheiden, dann wird die Antwort geschrieben."}</strong>{pendingOrder ? " Die Bestellung wird noch gesucht." : ""}</p>
       <div className="row wrap">
-        {Object.entries(DECISION_LABEL).map(([key, label]) => (
+        {Object.entries(DECISION_LABEL).filter(([key]) => key !== "custom").map(([key, label]) => (
           <button key={key} className={current === key ? "primary" : key === "customer_right" && !hasDraft ? "primary" : ""} onClick={() => onDecide(key)}>{label}</button>
         ))}
+        <button className={custom || current === "custom" ? "primary" : ""} aria-expanded={custom} onClick={() => setCustom(!custom)}>Individuell</button>
       </div>
+      {custom && (
+        <form className="custom-reply" onSubmit={(e) => { e.preventDefault(); if (!instruction.trim()) return; setBusy(true); onCompose(instruction); setCustom(false); setInstruction(""); setBusy(false); }}>
+          <label className="field"><span>Was soll der Kunde als Antwort bekommen?</span>
+            <textarea rows={4} value={instruction} onChange={(e) => setInstruction(e.target.value)} placeholder="z. B. Sorry für die Verwechslung, die richtige Dose geht heute raus, die falsche darf er behalten." autoFocus />
+          </label>
+          <div className="row wrap">
+            <button type="submit" className="primary" disabled={busy || !instruction.trim()}>{ai ? "Ausformulieren" : "Als Antwort übernehmen"}</button>
+            <span className="small muted">{ai ? "Claude formuliert daraus eine freundliche, vollständige Antwort (kostet Claude-Guthaben)." : "Ohne Claude-Schlüssel wird dein Text mit Anrede und Signatur übernommen."}</span>
+          </div>
+        </form>
+      )}
       <p className="small muted">{WRITER_NOTE[writer] ?? WRITER_NOTE.rules}</p>
     </div>
   );
@@ -485,7 +502,7 @@ function DraftEditor(props: {
     <div className="draft">
       <div className="row wrap small">
         {draft.risks.map((r) => <span key={r} className="pill warn">Achtung: {RISK_LABEL[r] ?? r}</span>)}
-        <span className="muted">{draft.decision ? `${DECISION_LABEL[draft.decision] ?? draft.decision}, ` : ""}Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : "von der KI"}{draft.status === "edited" ? ", bearbeitet" : ""}, {fmtDate(draft.updated_at)}</span>
+        <span className="muted">{draft.decision ? `${DECISION_LABEL[draft.decision] ?? draft.decision}, ` : ""}Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : draft.generated_by === "person" ? "nach deiner Vorgabe" : "von der KI"}{draft.status === "edited" ? ", bearbeitet" : ""}, {fmtDate(draft.updated_at)}</span>
       </div>
       <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} readOnly={!canEdit} />
       {(blocking.length > 0 || warnings.length > 0) && (

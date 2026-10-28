@@ -201,3 +201,5 @@ a.button:hover { background: var(--text); color: var(--card); }
 .attachments .thumb img { width: 160px; height: 120px; object-fit: cover; border: 1px solid var(--line); background: var(--bg); }
 .attachments .thumb span { overflow-wrap: anywhere; }
 .attachments .thumb:hover img { border-color: var(--text); }
+.custom-reply { display: grid; gap: 8px; }
+.custom-reply textarea { width: 100%; }

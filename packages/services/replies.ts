@@ -212,6 +212,40 @@ export async function requestRedraft(ctx: AppContext, actor: Actor, conversation
   await audit(ctx.db, actor, "draft.requested", "conversation", conversationId, { decision });
 }
 
+/**
+ * "Individuell": what the person typed is the answer. With Claude it is worded
+ * friendly and customer-oriented; without, it is wrapped in greeting and signature.
+ * Saved as a normal draft, so the draft check and approval apply as always.
+ */
+export async function composeDraft(ctx: AppContext, actor: Actor, conversationId: string, instruction: string): Promise<{ draftId: string; worded: boolean }> {
+  requireRole(actor, ["owner", "agent"]);
+  const text = instruction.trim();
+  if (!text) throw new ServiceError(400, "INVALID", "Bitte zuerst eintippen, was geantwortet werden soll.");
+  const conv = await loadConversation(ctx.db, actor.workspaceId, conversationId);
+  if (!conv.latest_inbound_message_id) throw new ServiceError(409, "NO_MESSAGE", "In diesem Fall gibt es keine Kundennachricht zum Beantworten.");
+  const ws = (await one<WorkspaceRow>(ctx.db, "SELECT reply_signature, reply_tone, default_language, allowed_link_prefixes, ai_enabled, ai_secret_id FROM workspaces WHERE id = $1", [actor.workspaceId]))!;
+  const provider = await providerFor(ctx, ws, actor.workspaceId);
+  const { linkId, order } = await currentOrder(ctx.db, actor.workspaceId, conversationId);
+  const facts = order ? buildOrderFacts(order) : [];
+  const body = provider.polish ? text : ["Guten Tag,", "", text, "", ws.reply_signature].join("\n");
+  const issues = checkDraft({ text: body, citedFactIds: [], facts, order, orderStatus: orderStatusForAi(conv.order_match_status), allowedLinkPrefixes: ws.allowed_link_prefixes });
+  const draft = await withTx(ctx.db, async (tx) => {
+    await tx.query("UPDATE drafts SET status = 'superseded', updated_at = now() WHERE workspace_id = $1 AND conversation_id = $2 AND status IN ('proposed','edited')", [actor.workspaceId, conversationId]);
+    const row = await one<{ id: string; version: number }>(
+      tx,
+      `INSERT INTO drafts (workspace_id, conversation_id, based_on_conversation_version, inbound_message_id, order_link_id, intent, summary, body,
+         cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision)
+       VALUES ($1,$2,$3,$4,$5,'other','Antwort nach Vorgabe des Teams.',$6,'{}',$7,'[]','["none"]',$8,$9,'person',NULL,NULL,'custom') RETURNING id, version`,
+      [actor.workspaceId, conversationId, conv.version, conv.latest_inbound_message_id, linkId, body, JSON.stringify(facts), detectRisks(text), JSON.stringify(issues)],
+    );
+    await audit(tx, actor, "draft.composed", "draft", row!.id, {});
+    return row!;
+  });
+  if (!provider.polish) return { draftId: draft.id, worded: false };
+  await polishDraft(ctx, actor, draft.id, { body: text, expectedVersion: draft.version });
+  return { draftId: draft.id, worded: true };
+}
+
 /** Which writer this workspace uses: its own Claude key, the installation's Claude, or the free templates. */
 async function providerFor(ctx: AppContext, ws: Pick<WorkspaceRow, "ai_enabled" | "ai_secret_id">, workspaceId: string): Promise<AiProvider> {
   if (!ws.ai_enabled) return new RulesProvider();
