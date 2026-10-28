@@ -166,6 +166,8 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
 
       <WorkspaceForm data={data} owner={owner} onSave={(body) => act(() => api("PUT", `${base}/settings`, body), () => "Gespeichert.")} />
 
+      <DesignCard base={base} owner={owner} />
+
       <AiKeyCard
         data={data}
         owner={owner}
@@ -505,3 +507,90 @@ function MiraklForm({ onSubmit, onCancel }: { onSubmit: (body: unknown) => void;
   );
 }
 
+
+interface DesignReading { theme: unknown; found: Array<{ field: string; label: string; value: string }>; warnings: string[] }
+interface WorkspaceThemeInfo { custom: { productName?: string; colors: Record<string, string>; fonts: { sans?: string; mono?: string }; radius?: number } | null }
+
+/** Look of this workspace from an uploaded DESIGN.md: preview first, active only after "Übernehmen". */
+function DesignCard({ base, owner }: { base: string; owner: boolean }) {
+  const [current, setCurrent] = useState<WorkspaceThemeInfo["custom"]>(null);
+  const [reading, setReading] = useState<DesignReading | null>(null);
+  const [fileName, setFileName] = useState("");
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const reload = useCallback(async () => {
+    const t = await api<WorkspaceThemeInfo>("GET", `${base}/theme`).catch(() => ({ custom: null }));
+    setCurrent(t.custom);
+  }, [base]);
+  useEffect(() => void reload(), [reload]);
+  const changed = () => window.dispatchEvent(new Event("supportx-theme"));
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setMessage(null);
+    try { await fn(); } catch (err) { setMessage({ ok: false, text: (err as Error).message }); } finally { setBusy(false); }
+  };
+  const onFile = (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 200_000) return setMessage({ ok: false, text: "Die Datei ist zu groß (höchstens 200 KB)." });
+    setFileName(file.name);
+    void run(async () => setReading(await api<DesignReading>("POST", `${base}/design/preview`, { text: await file.text() })));
+  };
+  const summary = current
+    ? `Eigenes Design aktiv · ${Object.keys(current.colors).length} Farben${current.fonts.sans ? ` · ${current.fonts.sans.split(",")[0]!.replace(/"/g, "")}` : ""}`
+    : "Standard-Design";
+  const swatches = (found: DesignReading["found"]) => (
+    <ul className="design-found">
+      {found.map((f) => (
+        <li key={f.field}>
+          {f.field.startsWith("colors.") && <i className="swatch" style={{ background: f.value }} aria-hidden="true" />}
+          <span>{f.label}</span>
+          <code>{f.value}</code>
+        </li>
+      ))}
+    </ul>
+  );
+
+  return (
+    <section className="card">
+      <h3>Design</h3>
+      <p className="muted small">{summary}</p>
+      <p className="muted small">Lade eine DESIGN.md hoch. SupportX liest daraus Farben (als #rrggbb mit Rolle, z. B. „Hintergrund: #ffffff“), Schriften und den Eckenradius. Vor dem Übernehmen siehst du, was erkannt wurde. Schlecht lesbare Farbpaare werden nicht übernommen.</p>
+      {owner && (
+        <label className="file-pick">
+          <input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" disabled={busy} onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ""; }} />
+          <span className="button">design.md auswählen</span>
+        </label>
+      )}
+      {reading && (
+        <div className="design-preview">
+          <h4>Erkannt in {fileName}</h4>
+          {reading.found.length > 0 && swatches(reading.found)}
+          {reading.warnings.map((w) => <p key={w} className="small warn-text">{w}</p>)}
+          <div className="row">
+            {reading.found.length > 0 && <button className="primary" disabled={busy} onClick={() => void run(async () => {
+              const r = await api<{ warnings: string[] }>("PUT", `${base}/design`, reading.theme);
+              setReading(null);
+              await reload();
+              changed();
+              setMessage({ ok: true, text: r.warnings.length ? `Übernommen. ${r.warnings.join(" ")}` : "Übernommen. Das Design gilt jetzt für diesen Arbeitsbereich." });
+            })}>Übernehmen</button>}
+            <button disabled={busy} onClick={() => setReading(null)}>Verwerfen</button>
+          </div>
+        </div>
+      )}
+      {owner && current && !reading && (
+        <div className="row">
+          <button disabled={busy} onClick={() => void run(async () => {
+            await api("DELETE", `${base}/design`);
+            await reload();
+            changed();
+            setMessage({ ok: true, text: "Standard-Design wiederhergestellt." });
+          })}>Zurücksetzen</button>
+        </div>
+      )}
+      {message && <p className={message.ok ? "small ok-text" : "small error"} role="status">{message.text}</p>}
+      <p className="muted small">Gilt für alle in diesem Arbeitsbereich, sobald sie die Seite neu laden.</p>
+    </section>
+  );
+}

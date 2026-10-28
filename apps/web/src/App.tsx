@@ -28,8 +28,32 @@ function Wordmark({ brand, big }: { brand: Brand; big?: boolean }) {
   return <Tag className={big ? "wordmark big" : "wordmark"}><i className="sq" aria-hidden="true" />{brand.productName.toUpperCase()}</Tag>;
 }
 
+/** Look of the selected workspace (uploaded DESIGN.md), layered over the installation theme. */
+function useWorkspaceTheme(workspaceId: string | null): string | null {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId) return;
+    let alive = true;
+    const load = () => api<{ css: string; productName: string; custom: unknown }>("GET", `/api/w/${workspaceId}/theme`).then((t) => {
+      if (!alive) return;
+      let el = document.getElementById("ws-theme");
+      if (!el) {
+        el = document.createElement("style");
+        el.id = "ws-theme";
+        document.head.appendChild(el);
+      }
+      el.textContent = t.css;
+      setName(t.custom ? t.productName : null);
+    }, () => {});
+    void load();
+    window.addEventListener("supportx-theme", load);
+    return () => { alive = false; window.removeEventListener("supportx-theme", load); };
+  }, [workspaceId]);
+  return name;
+}
+
 export function App() {
-  const brand = useBrand();
+  const installBrand = useBrand();
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -48,6 +72,8 @@ export function App() {
     }
   }, []);
   useEffect(() => void load(), [load]);
+  const wsName = useWorkspaceTheme(me ? workspaceId : null);
+  const brand = wsName ? { ...installBrand, productName: wsName } : installBrand;
 
   // Return from the eBay consent: finish it with a same-origin API call (the session
   // cookie is SameSite=strict and is not sent on eBay's redirect itself).
@@ -71,7 +97,7 @@ export function App() {
   }, [me]);
 
   if (loading) return <div className="center muted">Lädt …</div>;
-  if (!me) return <Login onDone={load} brand={brand} />;
+  if (!me) return <Login onDone={load} brand={installBrand} />;
   const workspace = me.workspaces.find((w) => w.id === workspaceId);
 
   return (

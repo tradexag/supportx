@@ -37,6 +37,7 @@ import { ServiceError, type Actor, type AppContext } from "../../packages/servic
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
 import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
+import { previewDesign, resetDesign, saveDesign, workspaceTheme } from "../../packages/services/design.ts";
 import { approveDraft, composeDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
 const SESSION_COOKIE = "supportx_session";
@@ -85,6 +86,22 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   const css = themeCss(theme);
   app.get("/theme.css", async (_req, reply) => reply.type("text/css; charset=utf-8").header("Cache-Control", "no-cache").send(css));
   app.get("/api/theme", async () => publicTheme(theme));
+  // Workspace look from an uploaded DESIGN.md, layered over the installation theme.
+  app.get("/api/w/:ws/theme", async (req) => {
+    const own = await workspaceTheme(ctx, await actor(req));
+    if (!own) return { custom: null, css: "", productName: theme.productName };
+    const merged = parseTheme({ ...theme, productName: own.productName ?? theme.productName, colors: { ...theme.colors, ...own.colors }, fonts: { ...theme.fonts, ...own.fonts }, radius: own.radius ?? theme.radius });
+    return { custom: own, css: themeCss(merged), productName: merged.productName };
+  });
+  app.post("/api/w/:ws/design/preview", async (req) => {
+    const body = parse(z.object({ text: z.string().max(400_000) }), req.body);
+    return previewDesign(await actor(req), body.text);
+  });
+  app.put("/api/w/:ws/design", async (req) => saveDesign(ctx, await actor(req), req.body));
+  app.delete("/api/w/:ws/design", async (req) => {
+    await resetDesign(ctx, await actor(req));
+    return { ok: true };
+  });
   if (ctx.config.THEME_DIR && existsSync(ctx.config.THEME_DIR)) {
     await app.register(fastifyStatic, { root: path.resolve(ctx.config.THEME_DIR), prefix: "/theme/", decorateReply: false, index: false, allowedPath: (p) => /^\/[\w.-]+\.(svg|png|jpe?g|webp|woff2?|ttf|otf)$/i.test(p) });
   }

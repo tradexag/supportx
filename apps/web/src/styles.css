@@ -18,8 +18,8 @@ input:hover, select:hover, textarea:hover { border-color: var(--graphite); }
 input:focus, select:focus, textarea:focus { border-color: var(--text); }
 textarea { width: 100%; resize: vertical; }
 /* Buttons (design basis §7): primary = filled ink, one per area; secondary = ink outline; .link = ghost. */
-button, a.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 16px; background: var(--card); border: 1px solid var(--text); border-radius: var(--radius); color: var(--text); font-weight: 500; cursor: pointer; white-space: nowrap; text-decoration: none; transition: background-color 150ms, color 150ms, transform 150ms cubic-bezier(0.22, 1, 0.36, 1); }
-button:hover:not(:disabled), a.button:hover { background: var(--bg); }
+button, a.button, span.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 16px; background: var(--card); border: 1px solid var(--text); border-radius: var(--radius); color: var(--text); font-weight: 500; cursor: pointer; white-space: nowrap; text-decoration: none; transition: background-color 150ms, color 150ms, transform 150ms cubic-bezier(0.22, 1, 0.36, 1); }
+button:hover:not(:disabled), a.button:hover, .file-pick:hover span.button { background: var(--bg); }
 button:active:not(:disabled), a.button:active { transform: scale(0.96); }
 @media (prefers-reduced-motion: reduce) { button, a.button { transition: none; } button:active:not(:disabled) { transform: none; } }
 :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
@@ -203,3 +203,13 @@ a.button:hover { background: var(--text); color: var(--card); }
 .attachments .thumb:hover img { border-color: var(--text); }
 .custom-reply { display: grid; gap: 8px; }
 .custom-reply textarea { width: 100%; }
+/* Design card: file picker, recognised values with colour swatches. */
+.file-pick { display: inline-block; } .file-pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.file-pick:focus-within .button { outline: 2px solid var(--signal); outline-offset: 3px; }
+.design-preview { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.design-found { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.design-found li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.design-found code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.swatch { width: 16px; height: 16px; border: 1px solid var(--line); border-radius: 2px; grid-column: 1; }
+.design-found li span { grid-column: 2; }
+.ok-text { color: var(--ok); }
