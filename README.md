@@ -18,7 +18,9 @@ A self-hosted support inbox for marketplace sellers: Microsoft 365 mail in, orde
 
 - **Marketplace channels:** eBay Commerce Message API (OAuth per seller account), Kaufland Seller API tickets (HMAC), Shop Apotheke via the Mirakl inbox (read on demand unless the operator allowed background reads). Same drafts, approvals and outbox as mail; not yet tested against live accounts.
 
-Not yet: attachments (only flagged), MCP server, refund/replacement/return workflows, automatic replies.
+- **Invoices and files (0.5.0):** "Rechnung senden" fetches the invoice PDF of the linked order from weclapp (read-only, `downloadLatestSalesInvoicePdf`) and attaches it to a template reply (no AI cost); "Datei anhängen" adds a PDF/JPG/PNG to one reply. Optional per workspace: recognise invoice requests on arrival and prepare or send the invoice reply on its own (narrow rule `invoice-v1`; never when the order is unclear, the channel takes no files, the customer names an own address, or any check warns). Tested against local test doubles only.
+
+Not yet: MCP server, refund/replacement/return workflows, free-form automatic replies.
 
 ## Quick start (demo, no credentials)
 

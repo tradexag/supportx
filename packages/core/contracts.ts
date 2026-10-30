@@ -145,6 +145,8 @@ export interface MessageChannel {
   reconcileReply(marker: string, since: Date, threadKey: string, sentBody: string): Promise<ReconcileOutcome>;
   /** Cheap connectivity/permission check for the setup screen. */
   checkAccess(): Promise<{ ok: boolean; detail: string }>;
+  /** The invoice document as the ERP renders it (read-only), for attaching to a reply. */
+  downloadInvoicePdf?(invoiceId: string): Promise<{ data: Buffer; contentType: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,8 @@ export interface InvoiceFact {
   invoiceDate?: string;
   status?: string;
   paymentStatus?: string;
+  /** e.g. STANDARD_INVOICE, CREDIT_NOTE (weclapp salesInvoiceType). */
+  type?: string;
 }
 
 export interface OrderRecord {
@@ -240,6 +244,8 @@ export interface OrderProvider {
   findOrders(references: ReadonlyArray<ReferenceQuery>, scope: OrderScopeRule): Promise<OrderLookupResult>;
   getOrder(orderId: string, scope: OrderScopeRule): Promise<OrderLookupResult>;
   checkAccess(): Promise<{ ok: boolean; detail: string }>;
+  /** The invoice document as the ERP renders it (read-only), for attaching to a reply. */
+  downloadInvoicePdf?(invoiceId: string): Promise<{ data: Buffer; contentType: string }>;
 }
 
 // ---------------------------------------------------------------------------

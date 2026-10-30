@@ -1,3 +1,4 @@
+import { autoInvoice } from "./invoices.ts";
 import { AiProviderError } from "../ai/index.ts";
 import { many } from "../storage/db.ts";
 import type { AppContext } from "./context.ts";
@@ -51,6 +52,8 @@ export async function runJob(ctx: AppContext, job: JobRow): Promise<void> {
       return;
     case "case.enrich":
       await enrichConversation(ctx, ws, p.conversationId!);
+      // Invoice requests: only when the workspace switched it on (no AI, fixed template).
+      await autoInvoice(ctx, ws, p.conversationId!);
       return;
     case "case.draft":
       await generateDraft(ctx, ws, p.conversationId!, p.decision as ReplyDecision | undefined);

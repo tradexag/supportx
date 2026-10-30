@@ -324,6 +324,29 @@ export async function approveDraft(ctx: AppContext, actor: Actor, draftId: strin
   });
 }
 
+/**
+ * Approval by a narrow rule the operator switched on (e.g. "Rechnungen automatisch
+ * senden"), instead of a person. Same binding as a human approval; only for drafts
+ * without any warning. The send itself still passes every send blocker.
+ */
+export async function approveByRule(ctx: AppContext, workspaceId: string, draftId: string, rule: string): Promise<string> {
+  return withTx(ctx.db, async (tx) => {
+    const draft = await loadDraft(tx, workspaceId, draftId, true);
+    const conv = await loadConversation(tx, workspaceId, draft.conversation_id, true);
+    if (!["proposed", "edited"].includes(draft.status)) throw new ServiceError(409, "DRAFT_CLOSED", "Dieser Entwurf ist nicht mehr aktuell.");
+    if (draft.inbound_message_id !== conv.latest_inbound_message_id) throw new ServiceError(409, "STALE_DRAFT", "Es ist eine neuere Kundennachricht eingegangen.");
+    if (draft.issues.length > 0) throw new ServiceError(422, "NEEDS_PERSON", "Der Entwurf hat Hinweise und braucht eine Freigabe durch einen Menschen.");
+    const approval = await one<{ id: string }>(
+      tx,
+      `INSERT INTO approvals (workspace_id, conversation_id, draft_id, draft_version, conversation_version, body_sha256, approved_by, auto_rule, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, now() + ($8::int * interval '1 minute')) RETURNING id`,
+      [workspaceId, conv.id, draftId, draft.version, conv.version, sha256(draft.body), rule, ctx.config.APPROVAL_TTL_MIN],
+    );
+    await audit(tx, { type: "worker", workspaceId }, "draft.approved_by_rule", "draft", draftId, { approvalId: approval!.id, rule, draftVersion: draft.version });
+    return approval!.id;
+  });
+}
+
 export interface SendStatus {
   allowed: boolean;
   blockers: string[];

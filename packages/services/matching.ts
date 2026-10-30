@@ -50,7 +50,7 @@ async function storeLink(
  * Order numbers are unique in the merchant's weclapp, so a case without a
  * merchant account (or whose account finds nothing) searches all of weclapp.
  */
-const ALL_ORDERS: OrderScopeRule = { field: "none", value: "" };
+export const ALL_ORDERS: OrderScopeRule = { field: "none", value: "" };
 
 /** The one merchant account whose weclapp rule fits the order, if exactly one does. */
 async function accountForOrder(tx: Tx, workspaceId: string, order: OrderRecord): Promise<string | null> {

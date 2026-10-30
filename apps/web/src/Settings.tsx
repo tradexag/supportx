@@ -18,7 +18,7 @@ interface Rule { id: string; connection_id: string; priority: number; match_type
 interface Route { id: string; connection_id: string; source_platform: string; evidence_note: string; verified_at: string; verified_by: string | null }
 interface Descriptor { platform: string; label: string; transport: string; implementation: string; receive: string; reply: string; accountTestNeeded: string[]; notes: string }
 interface SettingsData {
-  workspace: { name: string; reply_signature: string; reply_tone: string; allowed_link_prefixes: string[]; ai_enabled: boolean; has_ai_key: boolean; ai_key_hint: string | null; setup_confirmations: Record<string, { at: string; by: string | null }> };
+  workspace: { name: string; auto_invoice?: "off" | "draft" | "send"; reply_signature: string; reply_tone: string; allowed_link_prefixes: string[]; ai_enabled: boolean; has_ai_key: boolean; ai_key_hint: string | null; setup_confirmations: Record<string, { at: string; by: string | null }> };
   accounts: Account[]; connections: Connection[]; rules: Rule[]; routes: Route[];
   erp: null | { base_url: string; search_fields: string[]; has_secret: boolean; status: string; last_checked_at: string | null; last_error: string | null };
   categoryRules: Array<{ id: string; match_type: string; pattern: string; category: "support" | "info" }>;
@@ -167,6 +167,7 @@ export function Settings({ workspaceId, role }: { workspaceId: string; role: Rol
       <WorkspaceForm data={data} owner={owner} onSave={(body) => act(() => api("PUT", `${base}/settings`, body), () => "Gespeichert.")} />
 
       <DocumentsCard base={base} owner={owner} />
+      <AutoInvoiceCard value={data.workspace.auto_invoice ?? "off"} owner={owner} onChange={(autoInvoice) => void act(() => api("PUT", `${base}/settings`, { autoInvoice }), () => "Gespeichert.")} />
 
       <DesignCard base={base} owner={owner} />
 
@@ -611,6 +612,28 @@ function readBase64(file: File): Promise<string> {
 }
 
 /** PDFs kept ready to attach to replies, e.g. the return instructions. */
+const AUTO_INVOICE: Record<"off" | "draft" | "send", string> = {
+  off: "Aus: nur auf Klick „Rechnung senden“",
+  draft: "Automatisch vorbereiten: Rechnung anhängen, Senden per Klick",
+  send: "Automatisch senden, wenn nichts dagegen spricht",
+};
+
+/** Customer asks for the invoice: what SupportX does on its own (no AI, fixed template). */
+function AutoInvoiceCard({ value, owner, onChange }: { value: "off" | "draft" | "send"; owner: boolean; onChange: (v: "off" | "draft" | "send") => void }) {
+  return (
+    <section className="card">
+      <h3>Rechnungsanfragen</h3>
+      <p className="muted small">Fragt ein Kunde nach seiner Rechnung, holt SupportX die Rechnungs-PDF der zugeordneten Bestellung aus weclapp und antwortet aus einer festen Vorlage, ohne KI-Kosten.</p>
+      <label>Bei neuen Anfragen
+        <select value={value} disabled={!owner} onChange={(e) => onChange(e.target.value as "off" | "draft" | "send")}>
+          {Object.entries(AUTO_INVOICE).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+      </label>
+      <p className="muted small">Automatisch gesendet wird nur, wenn die Bestellung eindeutig ist, die Rechnung als PDF vorliegt, der Kanal Dateien annimmt, der Versand für die Verbindung freigeschaltet ist und es keinen Hinweis gibt. Nennt der Kunde eine eigene Mailadresse, wird nichts automatisch gesendet und nie an diese Adresse. Gilt für Nachrichten ab jetzt, nicht für ältere.</p>
+    </section>
+  );
+}
+
 function DocumentsCard({ base, owner }: { base: string; owner: boolean }) {
   const [docs, setDocs] = useState<DocumentRow[] | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);

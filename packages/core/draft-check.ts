@@ -13,6 +13,8 @@ export interface DraftIssue {
     | "DELIVERY_PROMISE"
     | "ORDER_NOT_CONFIRMED"
     | "HEALTH_REVIEW"
+    | "RECIPIENT_IN_TEXT"
+    | "FILES_NOT_SUPPORTED"
     | "EMPTY";
   message: string;
 }

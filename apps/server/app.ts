@@ -37,7 +37,8 @@ import { ServiceError, type Actor, type AppContext } from "../../packages/servic
 import { enqueue } from "../../packages/services/jobs.ts";
 import { linkOrderManually, setConversationAccount } from "../../packages/services/matching.ts";
 import { getMessageAttachment, listMessageAttachments } from "../../packages/services/attachments.ts";
-import { deleteDocument, getDocument, listDocuments, setDraftDocuments, uploadDocument } from "../../packages/services/documents.ts";
+import { attachUploadedFile, deleteDocument, getDocument, listDocuments, setDraftDocuments, uploadDocument } from "../../packages/services/documents.ts";
+import { draftInvoiceReply } from "../../packages/services/invoices.ts";
 import { previewDesign, resetDesign, saveDesign, workspaceTheme } from "../../packages/services/design.ts";
 import { approveDraft, composeDraft, discardDraft, editDraft, polishDraft, queueReply, requestRedraft, resolveUncertainSend } from "../../packages/services/replies.ts";
 
@@ -211,6 +212,8 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
     const body = parse(z.object({ body: z.string().max(10_000), expectedVersion: z.number().int().positive() }), req.body);
     return editDraft(ctx, await actor(req), (req.params as { id: string }).id, body);
   });
+  // "Rechnung senden": invoice PDF from weclapp as a draft with attachment; sending still needs approval and a click.
+  app.post("/api/w/:ws/cases/:id/invoice-reply", async (req) => draftInvoiceReply(ctx, await actor(req), (req.params as { id: string }).id));
   app.post("/api/w/:ws/cases/:id/compose", async (req) => {
     const body = parse(z.object({ instruction: z.string().min(1).max(5_000) }), req.body);
     return composeDraft(ctx, await actor(req), (req.params as { id: string }).id, body.instruction);
@@ -222,6 +225,11 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.put("/api/w/:ws/drafts/:id/documents", async (req) => {
     const body = parse(z.object({ documentIds: z.array(z.string()).max(10), expectedVersion: z.number().int().positive() }), req.body);
     return setDraftDocuments(ctx, await actor(req), (req.params as { id: string }).id, body);
+  });
+  // "Datei anhängen": a file for this one reply (PDF, JPG, PNG).
+  app.post("/api/w/:ws/drafts/:id/files", { bodyLimit: 4_500_000 }, async (req) => {
+    const body = parse(z.object({ name: z.string().min(1).max(300), dataBase64: z.string().min(1).max(4_400_000), expectedVersion: z.number().int().positive() }), req.body);
+    return attachUploadedFile(ctx, await actor(req), (req.params as { id: string }).id, { name: body.name, data: Buffer.from(body.dataBase64, "base64"), expectedVersion: body.expectedVersion });
   });
   // Workspace PDFs (e.g. return instructions) to attach to replies.
   app.get("/api/w/:ws/documents", async (req) => ({ documents: await listDocuments(ctx, await actor(req)) }));
@@ -236,7 +244,7 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   app.get("/api/w/:ws/documents/:id", async (req, reply) => {
     const doc = await getDocument(ctx, await actor(req), (req.params as { id: string }).id);
     return reply
-      .type("application/pdf")
+      .type(doc.content_type)
       .header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(doc.name)}`)
       .header("Content-Security-Policy", "default-src 'none'; sandbox")
       .header("Cache-Control", "private, no-store")
@@ -260,7 +268,7 @@ export async function buildServer(ctx: AppContext, opts: { logger?: boolean; eba
   // --- Settings (owner) -------------------------------------------------------
   app.get("/api/w/:ws/settings", async (req) => getSettings(ctx, await actor(req)));
   app.put("/api/w/:ws/settings", async (req) => {
-    const body = parse(z.object({ replySignature: z.string().max(1000).optional(), replyTone: z.string().max(200).optional(), allowedLinkPrefixes: z.array(z.string().max(300)).max(20).optional(), aiEnabled: z.boolean().optional() }), req.body);
+    const body = parse(z.object({ replySignature: z.string().max(1000).optional(), replyTone: z.string().max(200).optional(), allowedLinkPrefixes: z.array(z.string().max(300)).max(20).optional(), aiEnabled: z.boolean().optional(), autoInvoice: z.enum(["off", "draft", "send"]).optional() }), req.body);
     await updateWorkspaceSettings(ctx, await actor(req), body);
     return { ok: true };
   });

@@ -48,6 +48,14 @@ export async function startFakeWeclapp(data: FakeWeclappData, opts: { token: str
       return send(status, { error: "simulated failure" });
     }
     if (req.method !== "GET") return send(405, { error: "read-only fake" });
+    // Invoice document: a synthetic PDF, or 404 when the record says it has none (`noPdf`).
+    const pdf = /^\/webapp\/api\/v2\/salesInvoice\/id\/([^/]+)\/downloadLatestSalesInvoicePdf$/.exec(url.pathname);
+    if (pdf) {
+      const inv = data.salesInvoice.find((i) => String(i.id) === decodeURIComponent(pdf[1]!));
+      if (!inv || inv.noPdf) return send(404, { error: "no document" });
+      res.writeHead(200, { "Content-Type": "application/pdf" });
+      return res.end(Buffer.from(`%PDF-1.4\n% Rechnung ${String(inv.invoiceNumber)}\n%%EOF`));
+    }
     const match = /^\/webapp\/api\/v2\/(salesOrder|shipment|salesInvoice|article)$/.exec(url.pathname);
     if (!match) return send(404, { error: "not found" });
     for (const key of url.searchParams.keys()) {

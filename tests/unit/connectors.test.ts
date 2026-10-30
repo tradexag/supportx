@@ -9,6 +9,26 @@ import { startFakeWeclapp, type FakeWeclapp } from "../../packages/testing/fake-
 const scope = (value: string) => ({ field: "salesChannel" as const, value });
 const order = (value: string) => ({ value, kind: "order" as const });
 
+describe("weclapp invoices", () => {
+  it("finds invoices via salesOrders.id when the tenant rejects salesOrderId, and downloads the PDF with a GET", async () => {
+    const fake = await startFakeWeclapp(demoWeclappData(), { token: DEMO.weclappToken, rejectFilters: ["salesInvoice.salesOrderId-eq"] });
+    try {
+      const provider = new WeclappOrderProvider({ baseUrl: fake.baseUrl, apiToken: DEMO.weclappToken, searchFields: ["orderNumberAtCustomer"], allowTestEndpoints: true });
+      const found = await provider.findOrders([order("302-1234567-7654321")], { field: "none", value: "" });
+      assert.equal(found.status, "unique");
+      if (found.status !== "unique") return;
+      assert.deepEqual(found.order.invoices.map((i) => [i.invoiceNumber, i.type]), [["RE-9001", "STANDARD_INVOICE"]]);
+      const pdf = await provider.downloadInvoicePdf("inv-1");
+      assert.equal(pdf.contentType, "application/pdf");
+      assert.match(pdf.data.toString("latin1"), /^%PDF-/);
+      await assert.rejects(provider.downloadInvoicePdf("../salesOrder"), /Ungültige Rechnungs-ID/);
+      assert.ok(fake.requests.every((r) => r.startsWith("GET ")));
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
 describe("weclapp adapter with filters the tenant rejects", () => {
   it("skips a rejected filter instead of failing the lookup, and names it when nothing else is left", async () => {
     const fake = await startFakeWeclapp(demoWeclappData(), { token: DEMO.weclappToken, rejectFilters: ["salesOrder.orderNumberAtCustomer-eq", "salesInvoice.salesOrderId-eq"] });

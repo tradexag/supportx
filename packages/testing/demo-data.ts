@@ -106,7 +106,7 @@ export function demoWeclappData(): FakeWeclappData {
       },
     ],
     salesInvoice: [
-      { id: "inv-1", invoiceNumber: "RE-9001", invoiceDate: day("2026-10-15"), status: "OPEN_ITEM_CREATED", paymentStatus: "PAID", salesOrderId: "so-amz-1" },
+      { id: "inv-1", invoiceNumber: "RE-9001", invoiceDate: day("2026-10-15"), status: "OPEN_ITEM_CREATED", paymentStatus: "PAID", salesInvoiceType: "STANDARD_INVOICE", salesOrderId: "so-amz-1", salesOrders: [{ id: "so-amz-1" }] },
       { id: "inv-2", invoiceNumber: "RE-9002", invoiceDate: day("2026-10-13"), status: "OPEN_ITEM_CREATED", paymentStatus: "PAID", salesOrderId: "so-dm-1" },
     ],
   };

@@ -44,6 +44,10 @@ interface CaseData {
   titleHints?: string[];
   writer?: "own_key" | "installation" | "rules";
   replyFiles?: { supported: boolean; note: string };
+  /** Files of this case only: uploaded for a reply or fetched from weclapp. */
+  caseFiles?: CaseFile[];
+  /** Invoice numbers of the linked order that can be sent. */
+  invoices?: string[];
 }
 
 const KIND_LABEL: Record<string, string> = { customer: "Kunde", echo: "unsere Antwort", manual_external: "außerhalb gesendet", platform_notice: "Systemhinweis" };
@@ -185,6 +189,9 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 writer={data.writer ?? "rules"}
                 pendingOrder={c.order_match_status === "pending"}
                 onDecide={(decision) => act(() => api("POST", `${base}/cases/${caseId}/redraft`, { decision }), "Die Antwort wird geschrieben. Sie erscheint hier in wenigen Sekunden.")}
+                invoices={data.invoices ?? []}
+                orderUnique={c.order_match_status === "unique"}
+                onInvoice={() => act(() => api("POST", `${base}/cases/${caseId}/invoice-reply`), data.replyFiles?.supported ? "Rechnung aus weclapp angehängt. Bitte lesen, freigeben und senden." : "Rechnung aus weclapp geholt. Dieser Kanal nimmt keine Dateien an, siehe Hinweis.")}
                 onCompose={(instruction) => act(() => api("POST", `${base}/cases/${caseId}/compose`, { instruction }), (data.writer ?? "rules") !== "rules" ? "Ausformuliert. Bitte noch einmal lesen und dann freigeben." : "Als Antwort übernommen. Bitte noch einmal lesen und dann freigeben.")}
               />
             )}
@@ -202,8 +209,10 @@ export function CaseView({ workspaceId, caseId, role, onChanged }: { workspaceId
                 canPolish={(data.writer ?? "rules") !== "rules"}
                 onPolish={(body) => act(() => api("POST", `${base}/drafts/${draft.id}/polish`, { body, expectedVersion: draft.version }), "Neu formuliert und gespeichert. Bitte noch einmal lesen.")}
                 documents={documents}
+                caseFiles={data.caseFiles ?? []}
                 replyFiles={data.replyFiles ?? { supported: false, note: "" }}
                 documentBase={`${base}/documents`}
+                onUpload={(file) => act(async () => api("POST", `${base}/drafts/${draft.id}/files`, { name: file.name, dataBase64: await readBase64(file), expectedVersion: draft.version }), "Datei angehängt. Bitte Antwort mit Anhang freigeben.")}
                 onDocuments={(ids) => act(() => api("PUT", `${base}/drafts/${draft.id}/documents`, { documentIds: ids, expectedVersion: draft.version }), ids.length ? "Anhang gespeichert. Bitte Antwort mit Anhang freigeben." : "Anhang entfernt.")}
               />
             )}
@@ -466,7 +475,7 @@ function OrderDetails({ order, links }: { order: OrderSnapshot; links: OrderLink
   );
 }
 
-const DECISION_LABEL: Record<string, string> = { customer_right: "Kunde hat recht", customer_wrong: "Kunde hat nicht recht", ask_customer: "Erst nachfragen", custom: "Individuell" };
+const DECISION_LABEL: Record<string, string> = { customer_right: "Kunde hat recht", customer_wrong: "Kunde hat nicht recht", ask_customer: "Erst nachfragen", custom: "Individuell", invoice: "Rechnung senden" };
 const WRITER_NOTE: Record<string, string> = {
   own_key: "Die Antwort schreibt Claude über euren Schlüssel. Jeder Klick kostet Claude-Guthaben.",
   installation: "Die Antwort schreibt Claude. Jeder Klick kostet Claude-Guthaben.",
@@ -474,9 +483,10 @@ const WRITER_NOTE: Record<string, string> = {
 };
 
 /** First a person decides, then the reply is written: nothing is generated (or paid for) on its own. */
-function Decision({ current, hasDraft, writer, pendingOrder, onDecide, onCompose }: {
-  current: string | null; hasDraft: boolean; writer: string; pendingOrder: boolean; onDecide: (decision: string) => void; onCompose: (instruction: string) => void;
+function Decision({ current, hasDraft, writer, pendingOrder, invoices, orderUnique, onInvoice, onDecide, onCompose }: {
+  current: string | null; hasDraft: boolean; writer: string; pendingOrder: boolean; invoices: string[]; orderUnique: boolean; onInvoice: () => void; onDecide: (decision: string) => void; onCompose: (instruction: string) => void;
 }) {
+  const [fetching, setFetching] = useState(false);
   const [custom, setCustom] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
@@ -485,11 +495,20 @@ function Decision({ current, hasDraft, writer, pendingOrder, onDecide, onCompose
     <div className="decision">
       <p className="small"><strong>{hasDraft ? "Andere Entscheidung? Dann wird die Antwort neu geschrieben." : "Erst entscheiden, dann wird die Antwort geschrieben."}</strong>{pendingOrder ? " Die Bestellung wird noch gesucht." : ""}</p>
       <div className="row wrap">
-        {Object.entries(DECISION_LABEL).filter(([key]) => key !== "custom").map(([key, label]) => (
+        {Object.entries(DECISION_LABEL).filter(([key]) => key !== "custom" && key !== "invoice").map(([key, label]) => (
           <button key={key} className={current === key ? "primary" : key === "customer_right" && !hasDraft ? "primary" : ""} onClick={() => onDecide(key)}>{label}</button>
         ))}
         <button className={custom || current === "custom" ? "primary" : ""} aria-expanded={custom} onClick={() => setCustom(!custom)}>Individuell</button>
+        <button
+          className={current === "invoice" ? "primary" : ""}
+          disabled={fetching}
+          onClick={async () => { setFetching(true); try { await onInvoice(); } finally { setFetching(false); } }}
+          title="Holt die Rechnungs-PDF der zugeordneten Bestellung aus weclapp und hängt sie an eine Antwort aus der Vorlage (ohne KI-Kosten). Gesendet wird erst nach Freigabe und Klick auf Senden."
+        >{fetching ? "Holt Rechnung …" : "Rechnung senden"}</button>
       </div>
+      <p className="small muted">
+        „Rechnung senden“: {!orderUnique ? "geht erst, wenn die Bestellung eindeutig zugeordnet ist." : invoices.length ? `holt ${invoices.length > 1 ? "die Rechnungen" : "die Rechnung"} ${invoices.join(", ")} als PDF aus weclapp, ohne KI-Kosten.` : "sucht die Rechnung der Bestellung in weclapp und holt sie als PDF, ohne KI-Kosten."}
+      </p>
       {custom && (
         <form className="custom-reply" onSubmit={(e) => { e.preventDefault(); if (!instruction.trim()) return; setBusy(true); onCompose(instruction); setCustom(false); setInstruction(""); setBusy(false); }}>
           <label className="field"><span>Was soll der Kunde als Antwort bekommen?</span>
@@ -509,7 +528,7 @@ function Decision({ current, hasDraft, writer, pendingOrder, onDecide, onCompose
 function DraftEditor(props: {
   draft: Draft; canEdit: boolean; approval: CaseData["approvals"][number] | undefined; send: CaseData["send"];
   onSave: (body: string) => void; onApprove: (ack: boolean) => void; onSend: (approvalId: string) => void; onDiscard: () => void; canPolish: boolean; onPolish: (body: string) => void;
-  documents: DocumentInfo[]; replyFiles: { supported: boolean; note: string }; documentBase: string; onDocuments: (ids: string[]) => void;
+  documents: DocumentInfo[]; caseFiles: CaseFile[]; replyFiles: { supported: boolean; note: string }; documentBase: string; onDocuments: (ids: string[]) => void; onUpload: (file: File) => void;
 }) {
   const { draft, canEdit, approval, send } = props;
   const [body, setBody] = useState(draft.body);
@@ -525,7 +544,7 @@ function DraftEditor(props: {
         <span className="muted">{draft.decision ? `${DECISION_LABEL[draft.decision] ?? draft.decision}, ` : ""}Entwurf {draft.generated_by === "rules" ? "aus Vorlage" : draft.generated_by === "person" ? "nach deiner Vorgabe" : "von der KI"}{draft.status === "edited" ? ", bearbeitet" : ""}, {fmtDate(draft.updated_at)}</span>
       </div>
       <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} readOnly={!canEdit} />
-      <DraftFiles draft={draft} canEdit={canEdit && !dirty} documents={props.documents} replyFiles={props.replyFiles} base={props.documentBase} onChange={props.onDocuments} />
+      <DraftFiles draft={draft} canEdit={canEdit && !dirty} documents={props.documents} caseFiles={props.caseFiles} replyFiles={props.replyFiles} base={props.documentBase} onChange={props.onDocuments} onUpload={props.onUpload} />
       {(blocking.length > 0 || warnings.length > 0) && (
         <ul className="issues">
           {blocking.map((i, n) => <li key={`b${n}`} className="error">Blockiert: {i.message}</li>)}
@@ -574,15 +593,43 @@ interface DocumentInfo { id: string; name: string; size: number }
 
 const fmtSize = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
-/** PDFs from the workspace documents that go out with this reply; approved together with the text. */
-function DraftFiles({ draft, canEdit, documents, replyFiles, base, onChange }: {
-  draft: Draft; canEdit: boolean; documents: DocumentInfo[]; replyFiles: { supported: boolean; note: string }; base: string; onChange: (ids: string[]) => void;
+interface CaseFile { id: string; name: string; size: number; content_type: string; source: "upload" | "erp_invoice" }
+
+const MAX_FILE = 3 * 1024 * 1024;
+
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(new Error("Die Datei konnte nicht gelesen werden."));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Files that go out with this reply, approved together with the text: workspace PDFs,
+ * files of this case (invoice from weclapp) or a file uploaded just for this reply.
+ * Shown in every channel; where the channel takes no files it says so and why.
+ */
+function DraftFiles({ draft, canEdit, documents, caseFiles, replyFiles, base, onChange, onUpload }: {
+  draft: Draft; canEdit: boolean; documents: DocumentInfo[]; caseFiles: CaseFile[]; replyFiles: { supported: boolean; note: string }; base: string; onChange: (ids: string[]) => void; onUpload: (file: File) => void;
 }) {
+  const [tooBig, setTooBig] = useState(false);
   const chosen = draft.document_ids ?? [];
-  const available = documents.filter((d) => !chosen.includes(d.id));
-  const nameOf = (id: string) => documents.find((d) => d.id === id)?.name ?? "Dokument (aus der Liste entfernt)";
-  if (chosen.length === 0 && documents.length === 0) return null;
-  if (!replyFiles.supported) return documents.length > 0 ? <p className="small muted draft-files">{replyFiles.note}</p> : null;
+  const all: Array<{ id: string; name: string; size: number }> = [...caseFiles, ...documents];
+  const available = all.filter((d) => !chosen.includes(d.id));
+  const nameOf = (id: string) => all.find((d) => d.id === id)?.name ?? "Dokument (aus der Liste entfernt)";
+  const full = chosen.length >= 3;
+  if (!replyFiles.supported) {
+    return (
+      <div className="draft-files small">
+        <strong>Anhang</strong>
+        {canEdit && <button disabled title={replyFiles.note}>Datei anhängen</button>}
+        <span className="muted">{replyFiles.note}</span>
+        {caseFiles.map((f) => <span key={f.id} className="file-chip"><a href={`${base}/${f.id}`} download>{f.name}</a> <span className="muted">zum Herunterladen</span></span>)}
+      </div>
+    );
+  }
   return (
     <div className="draft-files small">
       <strong>Anhang</strong>
@@ -592,12 +639,30 @@ function DraftFiles({ draft, canEdit, documents, replyFiles, base, onChange }: {
           {canEdit && <button className="link" onClick={() => onChange(chosen.filter((x) => x !== id))} aria-label={`${nameOf(id)} entfernen`}>entfernen</button>}
         </span>
       ))}
-      {canEdit && available.length > 0 && chosen.length < 3 && (
+      {canEdit && available.length > 0 && !full && (
         <select value="" onChange={(e) => e.target.value && onChange([...chosen, e.target.value])} aria-label="PDF anhängen">
           <option value="">PDF anhängen …</option>
           {available.map((d) => <option key={d.id} value={d.id}>{d.name} ({fmtSize(d.size)})</option>)}
         </select>
       )}
+      {canEdit && !full && (
+        <label className="file-pick" title="PDF, JPG oder PNG, höchstens 3 MB; gilt nur für diese Antwort">
+          <input
+            type="file"
+            accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              if (file.size > MAX_FILE) { setTooBig(true); return; }
+              setTooBig(false);
+              onUpload(file);
+            }}
+          />
+          <span className="button">Datei anhängen</span>
+        </label>
+      )}
+      {tooBig && <span className="error">Die Datei ist zu groß (höchstens 3 MB).</span>}
       {chosen.length === 0 && <span className="muted">kein Anhang</span>}
       {chosen.length > 0 && <span className="muted">{replyFiles.note}</span>}
     </div>

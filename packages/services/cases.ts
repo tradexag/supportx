@@ -5,7 +5,8 @@ import { audit } from "./audit.ts";
 import { enqueue } from "./jobs.ts";
 import { actorId, requireRole, ServiceError, type Actor, type AppContext } from "./context.ts";
 import { aiWriter, sendBlockers, titleHintsFor } from "./replies.ts";
-import { REPLY_FILES } from "./documents.ts";
+import { listCaseFiles, REPLY_FILES } from "./documents.ts";
+import { invoiceSummary } from "./invoices.ts";
 import { OWN_COPY_REASON, ownCopyText } from "../core/category.ts";
 import type { ChannelKind } from "./connections.ts";
 import type { OrderRecord } from "../core/contracts.ts";
@@ -61,7 +62,7 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
     many(ctx.db, "SELECT n.id, n.body, n.created_at, u.display_name AS author FROM internal_notes n JOIN users u ON u.id = n.author_user_id WHERE n.workspace_id = $1 AND n.conversation_id = $2 ORDER BY n.created_at", [ws, conversationId]),
     one(ctx.db, "SELECT id, status, references_tried, candidates, external_order_id, matched_by, linked_by, error, snapshot, retrieved_at, created_at FROM order_links WHERE workspace_id = $1 AND conversation_id = $2 AND is_current", [ws, conversationId]),
     many(ctx.db, "SELECT id, version, status, intent, summary, body, cited_fact_ids, facts, missing_information, suggested_actions, risks, issues, generated_by, ai_model, prompt_version, decision, document_ids, inbound_message_id, created_at, updated_at FROM drafts WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC LIMIT 5", [ws, conversationId]),
-    many(ctx.db, "SELECT a.id, a.draft_id, a.draft_version, a.approved_at, a.expires_at, a.invalidated_at, a.invalidation_reason, u.display_name AS approved_by FROM approvals a JOIN users u ON u.id = a.approved_by WHERE a.workspace_id = $1 AND a.conversation_id = $2 ORDER BY a.approved_at DESC LIMIT 10", [ws, conversationId]),
+    many(ctx.db, "SELECT a.id, a.draft_id, a.draft_version, a.approved_at, a.expires_at, a.invalidated_at, a.invalidation_reason, coalesce(u.display_name, 'automatisch (' || a.auto_rule || ')') AS approved_by FROM approvals a LEFT JOIN users u ON u.id = a.approved_by WHERE a.workspace_id = $1 AND a.conversation_id = $2 ORDER BY a.approved_at DESC LIMIT 10", [ws, conversationId]),
     many(ctx.db, "SELECT id, draft_id, state, attempts, last_error, expected_recipient, dispatched_at, created_at, updated_at FROM outbox WHERE workspace_id = $1 AND conversation_id = $2 ORDER BY created_at DESC", [ws, conversationId]),
     many(ctx.db, "SELECT action, actor_type, details, created_at FROM audit_events WHERE workspace_id = $1 AND ((target_type = 'conversation' AND target_id = $2) OR target_id IN (SELECT id::text FROM drafts WHERE conversation_id = $3) OR target_id IN (SELECT id::text FROM outbox WHERE conversation_id = $3)) ORDER BY created_at DESC LIMIT 50", [ws, conversationId, conversationId]),
     many(ctx.db, "SELECT id, name, platform FROM merchant_accounts WHERE workspace_id = $1 ORDER BY name", [ws]),
@@ -107,7 +108,9 @@ export async function getCase(ctx: AppContext, actor: Actor, conversationId: str
   const titleHints = titleHintsFor(link?.status === "unique" ? link.snapshot : null, latestInbound?.body_text ?? "");
   const writer = await aiWriter(ctx, ws);
   const replyFiles = REPLY_FILES[(conversation as { connection_kind: ChannelKind }).connection_kind] ?? { supported: false, note: "" };
-  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets, titleHints, writer, replyFiles };
+  const caseFiles = await listCaseFiles(ctx, actor, conversationId);
+  const invoices = invoiceSummary(link?.status === "unique" ? link.snapshot : null);
+  return { conversation, messages, relatedMessages: related.reverse(), notes, orderLink, drafts, approvals, outbox, history, accounts, members, send, linkTargets, titleHints, writer, replyFiles, caseFiles, invoices };
 }
 
 /** Counts for the inbox tabs. */
@@ -263,7 +266,7 @@ export async function assign(ctx: AppContext, actor: Actor, conversationId: stri
 export async function getSettings(ctx: AppContext, actor: Actor) {
   const ws = actor.workspaceId;
   const [workspace, accounts, connections, rules, routes, erp, categoryRules, jobs] = await Promise.all([
-    one(ctx.db, "SELECT id, name, reply_signature, reply_tone, default_language, allowed_link_prefixes, ai_enabled, ai_secret_id IS NOT NULL AS has_ai_key, ai_key_hint, setup_confirmations FROM workspaces WHERE id = $1", [ws]),
+    one(ctx.db, "SELECT id, name, reply_signature, reply_tone, default_language, allowed_link_prefixes, ai_enabled, auto_invoice, ai_secret_id IS NOT NULL AS has_ai_key, ai_key_hint, setup_confirmations FROM workspaces WHERE id = $1", [ws]),
     many(ctx.db, "SELECT id, name, platform, order_scope_field, order_scope_value, paused FROM merchant_accounts WHERE workspace_id = $1 ORDER BY name", [ws]),
     many(ctx.db, "SELECT id, kind, display_name, config - 'clientState' - 'secretHint' - 'oauthStateHash' - 'oauthStateExpiresAt' - 'oauthStateUserId' AS config, secret_id IS NOT NULL AS has_secret, default_merchant_account_id, default_source_platform, send_enabled, paused, health, last_sync_at, last_error FROM channel_connections WHERE workspace_id = $1 ORDER BY display_name", [ws]),
     many(ctx.db, "SELECT r.id, r.connection_id, r.priority, r.match_type, r.pattern, r.source_platform, r.merchant_account_id, ma.name AS merchant_account_name FROM routing_rules r LEFT JOIN merchant_accounts ma ON ma.id = r.merchant_account_id WHERE r.workspace_id = $1 ORDER BY r.priority, r.pattern", [ws]),
@@ -339,16 +342,17 @@ export async function setSetupConfirmation(ctx: AppContext, actor: Actor, input:
   });
 }
 
-export async function updateWorkspaceSettings(ctx: AppContext, actor: Actor, input: { replySignature?: string; replyTone?: string; allowedLinkPrefixes?: string[]; aiEnabled?: boolean }): Promise<void> {
+export async function updateWorkspaceSettings(ctx: AppContext, actor: Actor, input: { replySignature?: string; replyTone?: string; allowedLinkPrefixes?: string[]; aiEnabled?: boolean; autoInvoice?: "off" | "draft" | "send" }): Promise<void> {
   requireRole(actor, ["owner"]);
   const prefixes = input.allowedLinkPrefixes?.map((p) => p.trim()).filter(Boolean);
   if (prefixes?.some((p) => !/^https:\/\/[^\s/]+\.[^\s/]+\//.test(p))) throw new ServiceError(400, "INVALID", "Freigegebene Links müssen mit https://domain.tld/ beginnen.");
   await withTx(ctx.db, async (tx) => {
     await tx.query(
       `UPDATE workspaces SET reply_signature = coalesce($2, reply_signature), reply_tone = coalesce($3, reply_tone),
-         allowed_link_prefixes = coalesce($4, allowed_link_prefixes), ai_enabled = coalesce($5, ai_enabled) WHERE id = $1`,
-      [actor.workspaceId, input.replySignature ?? null, input.replyTone ?? null, prefixes ?? null, input.aiEnabled ?? null],
+         allowed_link_prefixes = coalesce($4, allowed_link_prefixes), ai_enabled = coalesce($5, ai_enabled), auto_invoice = coalesce($6, auto_invoice),
+         auto_invoice_since = CASE WHEN $6::text IS NULL OR $6::text = auto_invoice THEN auto_invoice_since WHEN $6::text = 'off' THEN NULL ELSE now() END WHERE id = $1`,
+      [actor.workspaceId, input.replySignature ?? null, input.replyTone ?? null, prefixes ?? null, input.aiEnabled ?? null, input.autoInvoice ?? null],
     );
-    await audit(tx, actor, "workspace.settings", "workspace", actor.workspaceId, { aiEnabled: input.aiEnabled });
+    await audit(tx, actor, "workspace.settings", "workspace", actor.workspaceId, { aiEnabled: input.aiEnabled, autoInvoice: input.autoInvoice });
   });
 }

@@ -9,7 +9,7 @@ import type {
   ReferenceQuery,
   ShipmentFact,
 } from "../../core/contracts.ts";
-import { assertAllowedEndpoint, HttpError, requestJson } from "../http.ts";
+import { assertAllowedEndpoint, HttpError, requestBinary, requestJson } from "../http.ts";
 
 /**
  * Read-only weclapp REST API v2 adapter (sole OrderProvider in v1).
@@ -154,6 +154,7 @@ export function mapOrder(order: Json, shipments: Json[], invoices: Json[], retri
     invoiceDate: isoDate(inv.invoiceDate),
     status: str(inv.status),
     paymentStatus: str(inv.paymentStatus),
+    type: str(inv.salesInvoiceType),
   }));
   return {
     provider: "weclapp",
@@ -230,12 +231,24 @@ export class WeclappOrderProvider implements OrderProvider {
   async #enrich(order: Json): Promise<OrderRecord> {
     const id = String(order.id);
     const rejected: string[] = [];
-    const [shipments, invoices] = await Promise.all([
+    // salesInvoice.salesOrderId is not filterable in API v2 (OpenAPI: filterable false);
+    // salesOrders.id is. The old filter is kept for tenants that still accept it, and
+    // the marketplace order number as a last resort. Every hit is checked again here.
+    const atCustomer = str(order.orderNumberAtCustomer);
+    const [shipments, ...invoiceLists] = await Promise.all([
       this.#tryGet("shipment", { "mainSalesOrderId-eq": id, pageSize: "100" }, rejected),
+      this.#tryGet("salesInvoice", { "salesOrders.id-eq": id, pageSize: "100" }, rejected),
       this.#tryGet("salesInvoice", { "salesOrderId-eq": id, pageSize: "100" }, rejected),
+      ...(atCustomer ? [this.#tryGet("salesInvoice", { "orderNumberAtCustomer-eq": atCustomer, pageSize: "20" }, rejected)] : []),
     ]);
-    if (rejected.length) console.warn(`[weclapp] Filter abgelehnt, Daten fehlen am Auftrag: ${rejected.join(", ")}`);
-    return mapOrder(order, shipments.filter((s) => belongsToOrder(s, id)), invoices, new Date().toISOString(), await this.#articles(order));
+    const invoices = new Map<string, Json>();
+    for (const inv of invoiceLists.flat()) {
+      const orderIds = orderIdsOf(inv);
+      const mine = orderIds.length ? orderIds.includes(id) : !!atCustomer && str(inv.orderNumberAtCustomer) === atCustomer;
+      if (mine) invoices.set(String(inv.id), inv);
+    }
+    if (rejected.length) console.warn(`[weclapp] Filter abgelehnt, Daten fehlen evtl. am Auftrag: ${rejected.join(", ")}`);
+    return mapOrder(order, shipments.filter((s) => belongsToOrder(s, id)), [...invoices.values()], new Date().toISOString(), await this.#articles(order));
   }
 
   /** Linked articles, for comparing the order title with the ERP article. Best effort: a failure only drops the comparison. */
@@ -354,6 +367,19 @@ export class WeclappOrderProvider implements OrderProvider {
     } catch (error) {
       return toLookupError(error);
     }
+  }
+
+  /** GET only: weclapp renders the latest invoice document; nothing is created or changed. */
+  async downloadInvoicePdf(invoiceId: string): Promise<{ data: Buffer; contentType: string }> {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(invoiceId)) throw new Error("Ungültige Rechnungs-ID.");
+    const url = new URL(`${this.#baseUrl}/salesInvoice/id/${encodeURIComponent(invoiceId)}/downloadLatestSalesInvoicePdf`);
+    const file = await requestBinary(url, {
+      headers: { AuthenticationToken: this.#config.apiToken, Accept: "application/pdf" },
+      timeoutMs: this.#config.timeoutMs ?? 30_000,
+      fetchImpl: this.#config.fetchImpl,
+      maxBytes: 10 * 1024 * 1024,
+    });
+    return { data: file.data, contentType: file.contentType };
   }
 
   async checkAccess(): Promise<{ ok: boolean; detail: string }> {
